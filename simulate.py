@@ -18,6 +18,7 @@ import time
 def build_leaf_probs(K, S, pmin):
     """Create leaf probability array. K^S leaves, linearly spaced pmin to 1.0."""
     num_leaves = K ** S
+    # NOTE 这样生成概率理论上是很能体现教育的，但是论文未指定生成方式
     probs = np.linspace(pmin, 1.0, num_leaves)
     return probs
 
@@ -44,6 +45,7 @@ def _softmax(eta, w, K_node):
     s = 0.0
     out = np.empty(K_node)
     for i in range(K_node):
+        # NOTE if eta * (w[i] - max_w) < -700, exp will underflow to 0
         out[i] = np.exp(eta * (w[i] - max_w))
         s += out[i]
     for i in range(K_node):
@@ -54,6 +56,7 @@ def _softmax(eta, w, K_node):
 @njit(cache=True)
 def _sample_from(probs, K_node):
     """Sample an index from a discrete distribution."""
+    # TODO 考虑为随机函数设定种子保证可复现性
     r = np.random.random()
     cum = 0.0
     for c in range(K_node - 1):
@@ -76,6 +79,9 @@ def run_eps_exp3(K, S, T, leaf_probs_init, change_time, eta, pi_arr, sample_time
     Node (l, i) has children at level l+1, indices [i*K, i*K+K-1].
     Leaves at level S: K^S leaves.
     Weights: w[l][i*K + c] for child c of node i at level l.
+
+    pi_arr: array of probabilities for uniform selection at each level
+    sample_times: array of times at which to record cumulative cost
     """
     # Flat weight storage: offsets[l] marks start of level l weights
     total_w = 0
@@ -158,7 +164,8 @@ def run_eps_exp3(K, S, T, leaf_probs_init, change_time, eta, pi_arr, sample_time
                 if sm_c > 1e-30:
                     g = cost / (q_v * sm_c)
                 else:
-                    g = 0.0
+                    # NOTE numberical stability
+                    g = 0
 
             # Only update the chosen child's weight
             w[w_start + chosen_c] -= g
@@ -176,10 +183,11 @@ def run_eps_exp3(K, S, T, leaf_probs_init, change_time, eta, pi_arr, sample_time
 # ============================================================
 
 @njit(cache=True)
-def run_exp3(K, S, T, leaf_probs_init, change_time, gamma, sample_times):
+def run_exp3(K, S, T, leaf_probs_init, change_time, eta, sample_times):
     """
-    One trial of standard EXP3. Each node runs EXP3 independently.
-    Uses the formulation: p[c] = (1-gamma)*exp(-eta*L[c])/Z + gamma/K
+    One trial of standard EXP3 (book version, Stoltz 2005: no explicit exploration).
+    Each node runs EXP3 independently.
+    Uses pure softmax: p[c] = exp(-eta*L[c]) / Z
     """
     total_w = 0
     offsets = np.empty(S, dtype=np.int64)
@@ -188,7 +196,6 @@ def run_exp3(K, S, T, leaf_probs_init, change_time, gamma, sample_times):
         total_w += (K ** l) * K
     # Cumulative importance-weighted loss
     L = np.zeros(total_w)
-    eta_exp3 = gamma / K
 
     num_samples = len(sample_times)
     cum_costs = np.zeros(num_samples)
@@ -211,12 +218,7 @@ def run_exp3(K, S, T, leaf_probs_init, change_time, gamma, sample_times):
             for c in range(K):
                 neg_L[c] = -L[w_start + c]
 
-            sm = _softmax(eta_exp3, neg_L, K)
-
-            # Mix with uniform exploration
-            p = np.empty(K)
-            for c in range(K):
-                p[c] = (1.0 - gamma) * sm[c] + gamma / K
+            p = _softmax(eta, neg_L, K)
 
             chosen = _sample_from(p, K)
             path_children[l] = chosen
@@ -273,15 +275,15 @@ def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200):
         else:
             pi_arr[l] = T ** (-1.0 / (S + 1))
 
-    # Standard EXP3 params
-    gamma_exp3 = min(1.0, np.sqrt(K * np.log(K) / T))
+    # Standard EXP3 params (book version, Theorem 11.2)
+    eta_exp3 = np.sqrt(2.0 * np.log(K) / (T * K))
 
     # Storage
     eps_costs_all = np.zeros((num_runs, num_samples))
     exp3_costs_all = np.zeros((num_runs, num_samples))
 
     print(f"  Config: K={K}, S={S}, pmin={pmin}, T={T}, eta={eta:.6f}, "
-          f"pi={pi_arr[0]:.6f}, gamma={gamma_exp3:.6f}")
+          f"pi={pi_arr[0]:.6f}, eta_exp3={eta_exp3:.6f}")
 
     for run in range(num_runs):
         t0 = time.time()
@@ -289,7 +291,7 @@ def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200):
             K, S, T, leaf_probs, change_time, eta, pi_arr, sample_times)
         t1 = time.time()
         exp3_costs_all[run] = run_exp3(
-            K, S, T, leaf_probs, change_time, gamma_exp3, sample_times)
+            K, S, T, leaf_probs, change_time, eta_exp3, sample_times)
         t2 = time.time()
         if run < 3 or (run + 1) % 5 == 0:
             print(f"    Run {run+1}/{num_runs}: eps-EXP3 {t1-t0:.1f}s, EXP3 {t2-t1:.1f}s")
@@ -373,7 +375,7 @@ if __name__ == '__main__':
     dummy_lp = np.array([0.5, 1.0])
     dummy_st = np.array([50, 100], dtype=np.int64)
     run_eps_exp3(2, 1, 100, dummy_lp, 1, 0.1, np.array([0.0]), dummy_st)
-    run_exp3(2, 1, 100, dummy_lp, 1, 0.5, dummy_st)
+    run_exp3(2, 1, 100, dummy_lp, 1, 0.1, dummy_st)
     print("JIT ready.\n")
 
     plot_results(configs, T)
