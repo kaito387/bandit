@@ -1,0 +1,379 @@
+"""
+Reproduce Section 7.1 of "Distributed No-Regret Learning for Multi-Stage Systems"
+Algorithms: epsilon-EXP3 (Algorithm 2) and Standard EXP3
+"""
+
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from numba import njit
+import time
+
+
+# ============================================================
+# Section 1: Tree helpers
+# ============================================================
+
+def build_leaf_probs(K, S, pmin):
+    """Create leaf probability array. K^S leaves, linearly spaced pmin to 1.0."""
+    num_leaves = K ** S
+    probs = np.linspace(pmin, 1.0, num_leaves)
+    return probs
+
+
+def optimal_cost_at(t, leaf_probs, change_time):
+    """Optimal fixed-leaf expected cost over t rounds."""
+    costs = leaf_probs * t
+    # Last leaf (p=1.0) changes to p=0 at change_time
+    costs[-1] = 1.0 * min(t, change_time) + 0.0 * max(0, t - change_time)
+    return float(np.min(costs))
+
+
+# ============================================================
+# Section 2: Numba utilities
+# ============================================================
+
+@njit(cache=True)
+def _softmax(eta, w, K_node):
+    """Numerically stable softmax."""
+    max_w = w[0]
+    for i in range(1, K_node):
+        if w[i] > max_w:
+            max_w = w[i]
+    s = 0.0
+    out = np.empty(K_node)
+    for i in range(K_node):
+        out[i] = np.exp(eta * (w[i] - max_w))
+        s += out[i]
+    for i in range(K_node):
+        out[i] /= s
+    return out
+
+
+@njit(cache=True)
+def _sample_from(probs, K_node):
+    """Sample an index from a discrete distribution."""
+    r = np.random.random()
+    cum = 0.0
+    for c in range(K_node - 1):
+        cum += probs[c]
+        if r < cum:
+            return c
+    return K_node - 1
+
+
+# ============================================================
+# Section 3: epsilon-EXP3 (Algorithm 2)
+# ============================================================
+
+@njit(cache=True)
+def run_eps_exp3(K, S, T, leaf_probs_init, change_time, eta, pi_arr, sample_times):
+    """
+    One trial of epsilon-EXP3.
+
+    Tree: S levels of internal nodes (level 0 = root). Level l has K^l nodes.
+    Node (l, i) has children at level l+1, indices [i*K, i*K+K-1].
+    Leaves at level S: K^S leaves.
+    Weights: w[l][i*K + c] for child c of node i at level l.
+    """
+    # Flat weight storage: offsets[l] marks start of level l weights
+    total_w = 0
+    offsets = np.empty(S, dtype=np.int64)
+    for l in range(S):
+        offsets[l] = total_w
+        total_w += (K ** l) * K
+    w = np.zeros(total_w)
+
+    num_samples = len(sample_times)
+    cum_costs = np.zeros(num_samples)
+    sample_idx = 0
+    cum_cost = 0.0
+
+    for t in range(1, T + 1):
+        # --- Forward pass: root to leaf ---
+        path_nodes = np.empty(S, dtype=np.int64)
+        path_children = np.empty(S, dtype=np.int64)
+        path_modes = np.empty(S, dtype=np.int64)  # 0=uniform, 1=EXP3
+        path_q = np.empty(S + 1)  # q[l] = prob that node at level l receives job
+        path_q[0] = 1.0
+
+        node_idx = 0
+        for l in range(S):
+            path_nodes[l] = node_idx
+            w_start = offsets[l] + node_idx * K
+
+            # Softmax over weights
+            w_node = w[w_start:w_start + K]
+            sm = _softmax(eta, w_node, K)
+
+            pi_l = pi_arr[l]
+
+            # Mixed probability p[v, c, t]
+            p_mix = np.empty(K)
+            for c in range(K):
+                p_mix[c] = pi_l / K + (1.0 - pi_l) * sm[c]
+
+            # Decide mode
+            if np.random.random() < pi_l:
+                # Uniform selection mode (education)
+                chosen = np.random.randint(0, K)
+                mode = 0
+            else:
+                # EXP3 mode (exploration/exploitation)
+                chosen = _sample_from(sm, K)
+                mode = 1
+
+            path_children[l] = chosen
+            path_modes[l] = mode
+            path_q[l + 1] = path_q[l] * p_mix[chosen]
+            node_idx = node_idx * K + chosen
+
+        # --- Leaf cost ---
+        leaf_idx = node_idx
+        p_leaf = leaf_probs_init[leaf_idx]
+        if t >= change_time and leaf_idx == len(leaf_probs_init) - 1:
+            p_leaf = 0.0
+        cost = 1.0 if np.random.random() < p_leaf else 0.0
+        cum_cost += cost
+
+        # --- Backward pass: update weights along the path ---
+        for l in range(S - 1, -1, -1):
+            nidx = path_nodes[l]
+            chosen_c = path_children[l]
+            mode = path_modes[l]
+            q_v = path_q[l]
+
+            w_start = offsets[l] + nidx * K
+            w_node = w[w_start:w_start + K]
+            sm = _softmax(eta, w_node, K)
+
+            if mode == 0:
+                # Uniform mode: g[chosen] = y * |C_v| / q[v,t]
+                g = cost * K / q_v
+            else:
+                # EXP3 mode: g[chosen] = y * sum(exp) / (q[v,t] * exp(chosen))
+                # = y / (q[v,t] * sm[chosen])
+                sm_c = sm[chosen_c]
+                if sm_c > 1e-30:
+                    g = cost / (q_v * sm_c)
+                else:
+                    g = 0.0
+
+            # Only update the chosen child's weight
+            w[w_start + chosen_c] -= g
+
+        # --- Record sample ---
+        if sample_idx < num_samples and t == sample_times[sample_idx]:
+            cum_costs[sample_idx] = cum_cost
+            sample_idx += 1
+
+    return cum_costs
+
+
+# ============================================================
+# Section 4: Standard EXP3
+# ============================================================
+
+@njit(cache=True)
+def run_exp3(K, S, T, leaf_probs_init, change_time, gamma, sample_times):
+    """
+    One trial of standard EXP3. Each node runs EXP3 independently.
+    Uses the formulation: p[c] = (1-gamma)*exp(-eta*L[c])/Z + gamma/K
+    """
+    total_w = 0
+    offsets = np.empty(S, dtype=np.int64)
+    for l in range(S):
+        offsets[l] = total_w
+        total_w += (K ** l) * K
+    # Cumulative importance-weighted loss
+    L = np.zeros(total_w)
+    eta_exp3 = gamma / K
+
+    num_samples = len(sample_times)
+    cum_costs = np.zeros(num_samples)
+    sample_idx = 0
+    cum_cost = 0.0
+
+    for t in range(1, T + 1):
+        # --- Forward pass ---
+        path_nodes = np.empty(S, dtype=np.int64)
+        path_children = np.empty(S, dtype=np.int64)
+        path_probs = np.empty(S)
+
+        node_idx = 0
+        for l in range(S):
+            path_nodes[l] = node_idx
+            w_start = offsets[l] + node_idx * K
+
+            # Compute softmax over negative loss
+            neg_L = np.empty(K)
+            for c in range(K):
+                neg_L[c] = -L[w_start + c]
+
+            sm = _softmax(eta_exp3, neg_L, K)
+
+            # Mix with uniform exploration
+            p = np.empty(K)
+            for c in range(K):
+                p[c] = (1.0 - gamma) * sm[c] + gamma / K
+
+            chosen = _sample_from(p, K)
+            path_children[l] = chosen
+            path_probs[l] = p[chosen]
+            node_idx = node_idx * K + chosen
+
+        # --- Leaf cost ---
+        leaf_idx = node_idx
+        p_leaf = leaf_probs_init[leaf_idx]
+        if t >= change_time and leaf_idx == len(leaf_probs_init) - 1:
+            p_leaf = 0.0
+        cost = 1.0 if np.random.random() < p_leaf else 0.0
+        cum_cost += cost
+
+        # --- Backward pass: update chosen child at each level ---
+        for l in range(S - 1, -1, -1):
+            nidx = path_nodes[l]
+            chosen_c = path_children[l]
+            p_c = path_probs[l]
+            w_start = offsets[l] + nidx * K
+            # Importance-weighted loss
+            if p_c > 1e-30:
+                L[w_start + chosen_c] += cost / p_c
+            # (unchosen children get 0 update)
+
+        # --- Record ---
+        if sample_idx < num_samples and t == sample_times[sample_idx]:
+            cum_costs[sample_idx] = cum_cost
+            sample_idx += 1
+
+    return cum_costs
+
+
+# ============================================================
+# Section 5: Experiment runner
+# ============================================================
+
+def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200):
+    """Run one (K, S, pmin) config. Returns (sample_times, eps_regret, exp3_regret)."""
+    leaf_probs = build_leaf_probs(K, S, pmin)
+    change_time = T // 100
+    num_leaves = K ** S
+
+    # Sample times (evenly spaced)
+    sample_times = np.linspace(T // num_samples, T, num_samples).astype(np.int64)
+
+    # epsilon-EXP3 params (Lemma 4)
+    eta = T ** (-float(S) / (S + 1))
+    pi_arr = np.empty(S)
+    for l in range(S):
+        if l == S - 1:
+            # Children are leaves -> no education needed
+            pi_arr[l] = 0.0
+        else:
+            pi_arr[l] = T ** (-1.0 / (S + 1))
+
+    # Standard EXP3 params
+    gamma_exp3 = min(1.0, np.sqrt(K * np.log(K) / T))
+
+    # Storage
+    eps_costs_all = np.zeros((num_runs, num_samples))
+    exp3_costs_all = np.zeros((num_runs, num_samples))
+
+    print(f"  Config: K={K}, S={S}, pmin={pmin}, T={T}, eta={eta:.6f}, "
+          f"pi={pi_arr[0]:.6f}, gamma={gamma_exp3:.6f}")
+
+    for run in range(num_runs):
+        t0 = time.time()
+        eps_costs_all[run] = run_eps_exp3(
+            K, S, T, leaf_probs, change_time, eta, pi_arr, sample_times)
+        t1 = time.time()
+        exp3_costs_all[run] = run_exp3(
+            K, S, T, leaf_probs, change_time, gamma_exp3, sample_times)
+        t2 = time.time()
+        if run < 3 or (run + 1) % 5 == 0:
+            print(f"    Run {run+1}/{num_runs}: eps-EXP3 {t1-t0:.1f}s, EXP3 {t2-t1:.1f}s")
+
+    # Optimal expected cost at each sample time
+    opt_at_sample = np.array([optimal_cost_at(int(st), leaf_probs, change_time)
+                              for st in sample_times])
+
+    # Time-average regret: (cum_cost - opt) / t
+    eps_regret = (eps_costs_all - opt_at_sample[None, :]) / sample_times[None, :].astype(float)
+    exp3_regret = (exp3_costs_all - opt_at_sample[None, :]) / sample_times[None, :].astype(float)
+
+    return sample_times, eps_regret, exp3_regret
+
+
+# ============================================================
+# Section 6: Plotting (Fig. 3)
+# ============================================================
+
+def plot_results(configs, T):
+    """Plot Fig. 3: 6 subplots of time-average regret."""
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    axes_flat = axes.flatten()
+
+    for idx, (K, S, pmin) in enumerate(configs):
+        print(f"\n=== Experiment {idx+1}/6: K={K}, S={S}, pmin={pmin} ===")
+        sample_times, eps_regret, exp3_regret = run_experiment(K, S, pmin, T)
+
+        ax = axes_flat[idx]
+        x = sample_times / 1e6
+
+        eps_mean = eps_regret.mean(axis=0)
+        eps_std = eps_regret.std(axis=0)
+        exp3_mean = exp3_regret.mean(axis=0)
+        exp3_std = exp3_regret.std(axis=0)
+
+        ax.plot(x, eps_mean, label='ε-EXP3', color='blue')
+        ax.fill_between(x, eps_mean - eps_std, eps_mean + eps_std,
+                        alpha=0.2, color='blue')
+
+        ax.plot(x, exp3_mean, label='EXP3', color='red')
+        ax.fill_between(x, exp3_mean - exp3_std, exp3_mean + exp3_std,
+                        alpha=0.2, color='red')
+
+        # Asymptotic trend c / T^{1/(S+1)}, calibrated at midpoint
+        mid = len(sample_times) // 2
+        if eps_mean[mid] > 0:
+            c_cal = eps_mean[mid] * sample_times[mid] ** (1.0 / (S + 1))
+            trend = c_cal / sample_times ** (1.0 / (S + 1))
+            ax.plot(x, trend, '--', label=f'O(1/T^{{1/{S+1}}})', color='green')
+
+        ax.set_title(f'K={K}, S={S}, pmin={pmin}')
+        ax.set_xlabel('T (×10⁶)')
+        ax.set_ylabel('Time-avg regret')
+        ax.legend(fontsize=8)
+        ax.set_ylim(bottom=0)
+
+    plt.tight_layout()
+    plt.savefig('fig3_regret.png', dpi=150)
+    print("\nSaved fig3_regret.png")
+
+
+# ============================================================
+# Section 7: Main
+# ============================================================
+
+if __name__ == '__main__':
+    configs = [
+        (2, 2, 0.2),
+        (2, 3, 0.4),
+        (2, 4, 0.6),
+        (4, 2, 0.2),
+        (4, 3, 0.4),
+        (4, 4, 0.6),
+    ]
+
+    T = 10_000_000  # Full experiment
+
+    # JIT warm-up
+    print("Warming up Numba JIT...")
+    dummy_lp = np.array([0.5, 1.0])
+    dummy_st = np.array([50, 100], dtype=np.int64)
+    run_eps_exp3(2, 1, 100, dummy_lp, 1, 0.1, np.array([0.0]), dummy_st)
+    run_exp3(2, 1, 100, dummy_lp, 1, 0.5, dummy_st)
+    print("JIT ready.\n")
+
+    plot_results(configs, T)
