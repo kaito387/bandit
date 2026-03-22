@@ -1,0 +1,11 @@
+[project]
+name = "bandit"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mathplot>=0.1",
+    "numba>=0.64.0",
+    "numpy>=2.4.3",
+]
