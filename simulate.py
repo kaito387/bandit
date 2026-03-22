@@ -252,12 +252,81 @@ def run_exp3(K, S, T, leaf_probs_init, change_time, eta, sample_times):
     return cum_costs
 
 
+@njit(cache=True)
+def run_exp3_qv(K, S, T, leaf_probs_init, change_time, eta_arr, sample_times):
+    """
+    One trial of EXP3 with path-context correction and level-dependent eta.
+    Same forward policy as standard EXP3, but backward update uses q_v
+    (probability that node v receives the job) in denominator.
+    eta_arr[l] is used by nodes at level l.
+    """
+    total_w = 0
+    offsets = np.empty(S, dtype=np.int64)
+    for l in range(S):
+        offsets[l] = total_w
+        total_w += (K ** l) * K
+    L = np.zeros(total_w)
+
+    num_samples = len(sample_times)
+    cum_costs = np.zeros(num_samples)
+    sample_idx = 0
+    cum_cost = 0.0
+
+    for t in range(1, T + 1):
+        # --- Forward pass ---
+        path_nodes = np.empty(S, dtype=np.int64)
+        path_children = np.empty(S, dtype=np.int64)
+        path_q = np.empty(S + 1)
+        path_q[0] = 1.0
+
+        node_idx = 0
+        for l in range(S):
+            path_nodes[l] = node_idx
+            w_start = offsets[l] + node_idx * K
+            eta_l = eta_arr[l]
+
+            neg_L = np.empty(K)
+            for c in range(K):
+                neg_L[c] = -L[w_start + c]
+
+            p = _softmax(eta_l, neg_L, K)
+
+            chosen = _sample_from(p, K)
+            path_children[l] = chosen
+            path_q[l + 1] = path_q[l] * p[chosen]
+            node_idx = node_idx * K + chosen
+
+        # --- Leaf cost ---
+        leaf_idx = node_idx
+        p_leaf = leaf_probs_init[leaf_idx]
+        if t >= change_time and leaf_idx == len(leaf_probs_init) - 1:
+            p_leaf = 0.0
+        cost = 1.0 if np.random.random() < p_leaf else 0.0
+        cum_cost += cost
+
+        # --- Backward pass: update chosen child at each level ---
+        for l in range(S - 1, -1, -1):
+            nidx = path_nodes[l]
+            chosen_c = path_children[l]
+            q_v = path_q[l]
+            w_start = offsets[l] + nidx * K
+            if q_v > 1e-30:
+                L[w_start + chosen_c] += cost / q_v
+
+        # --- Record ---
+        if sample_idx < num_samples and t == sample_times[sample_idx]:
+            cum_costs[sample_idx] = cum_cost
+            sample_idx += 1
+
+    return cum_costs
+
+
 # ============================================================
 # Section 5: Experiment runner
 # ============================================================
 
 def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200):
-    """Run one (K, S, pmin) config. Returns (sample_times, eps_regret, exp3_regret)."""
+    """Run one (K, S, pmin) config. Returns regrets of three algorithms."""
     leaf_probs = build_leaf_probs(K, S, pmin)
     change_time = T // 100
     num_leaves = K ** S
@@ -278,12 +347,20 @@ def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200):
     # Standard EXP3 params (book version, Theorem 11.2)
     eta_exp3 = np.sqrt(2.0 * np.log(K) / (T * K))
 
+    # EXP3-qv uses level-dependent eta from subtree leaf count
+    eta_qv_arr = np.empty(S)
+    for l in range(S):
+        leaves_in_subtree = K ** (S - l)
+        eta_qv_arr[l] = np.sqrt(2.0 * np.log(leaves_in_subtree) / (T * leaves_in_subtree))
+
     # Storage
     eps_costs_all = np.zeros((num_runs, num_samples))
     exp3_costs_all = np.zeros((num_runs, num_samples))
+    exp3_qv_costs_all = np.zeros((num_runs, num_samples))
 
     print(f"  Config: K={K}, S={S}, pmin={pmin}, T={T}, eta={eta:.6f}, "
-          f"pi={pi_arr[0]:.6f}, eta_exp3={eta_exp3:.6f}")
+            f"pi={pi_arr[0]:.6f}, eta_exp3={eta_exp3:.6f}, "
+            f"eta_qv_root={eta_qv_arr[0]:.6f}, eta_qv_leafparent={eta_qv_arr[S-1]:.6f}")
 
     for run in range(num_runs):
         t0 = time.time()
@@ -293,8 +370,14 @@ def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200):
         exp3_costs_all[run] = run_exp3(
             K, S, T, leaf_probs, change_time, eta_exp3, sample_times)
         t2 = time.time()
+        exp3_qv_costs_all[run] = run_exp3_qv(
+            K, S, T, leaf_probs, change_time, eta_qv_arr, sample_times)
+        t3 = time.time()
         if run < 3 or (run + 1) % 5 == 0:
-            print(f"    Run {run+1}/{num_runs}: eps-EXP3 {t1-t0:.1f}s, EXP3 {t2-t1:.1f}s")
+            print(
+                f"    Run {run+1}/{num_runs}: eps-EXP3 {t1-t0:.1f}s, "
+                f"EXP3 {t2-t1:.1f}s, EXP3-qv {t3-t2:.1f}s"
+            )
 
     # Optimal expected cost at each sample time
     opt_at_sample = np.array([optimal_cost_at(int(st), leaf_probs, change_time)
@@ -303,12 +386,13 @@ def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200):
     # Time-average regret: (cum_cost - opt) / t
     eps_regret = (eps_costs_all - opt_at_sample[None, :]) / sample_times[None, :].astype(float)
     exp3_regret = (exp3_costs_all - opt_at_sample[None, :]) / sample_times[None, :].astype(float)
+    exp3_qv_regret = (exp3_qv_costs_all - opt_at_sample[None, :]) / sample_times[None, :].astype(float)
 
-    return sample_times, eps_regret, exp3_regret
+    return sample_times, eps_regret, exp3_regret, exp3_qv_regret
 
 
 # ============================================================
-# Section 6: Plotting (Fig. 3)
+# Section 6: Plotting
 # ============================================================
 
 def plot_results(configs, T):
@@ -318,7 +402,7 @@ def plot_results(configs, T):
 
     for idx, (K, S, pmin) in enumerate(configs):
         print(f"\n=== Experiment {idx+1}/6: K={K}, S={S}, pmin={pmin} ===")
-        sample_times, eps_regret, exp3_regret = run_experiment(K, S, pmin, T)
+        sample_times, eps_regret, exp3_regret, exp3_qv_regret = run_experiment(K, S, pmin, T)
 
         ax = axes_flat[idx]
         x = sample_times / 1e6
@@ -327,6 +411,8 @@ def plot_results(configs, T):
         eps_std = eps_regret.std(axis=0)
         exp3_mean = exp3_regret.mean(axis=0)
         exp3_std = exp3_regret.std(axis=0)
+        exp3_qv_mean = exp3_qv_regret.mean(axis=0)
+        exp3_qv_std = exp3_qv_regret.std(axis=0)
 
         ax.plot(x, eps_mean, label='ε-EXP3', color='blue')
         ax.fill_between(x, eps_mean - eps_std, eps_mean + eps_std,
@@ -335,6 +421,10 @@ def plot_results(configs, T):
         ax.plot(x, exp3_mean, label='EXP3', color='red')
         ax.fill_between(x, exp3_mean - exp3_std, exp3_mean + exp3_std,
                         alpha=0.2, color='red')
+
+        ax.plot(x, exp3_qv_mean, label='EXP3-qv', color='orange')
+        ax.fill_between(x, exp3_qv_mean - exp3_qv_std, exp3_qv_mean + exp3_qv_std,
+                alpha=0.2, color='orange')
 
         # Asymptotic trend c / T^{1/(S+1)}, calibrated at midpoint
         mid = len(sample_times) // 2
@@ -350,8 +440,8 @@ def plot_results(configs, T):
         ax.set_ylim(bottom=0)
 
     plt.tight_layout()
-    plt.savefig('fig3_regret.png', dpi=150)
-    print("\nSaved fig3_regret.png")
+    plt.savefig('regret.png', dpi=150)
+    print("\nSaved regret.png")
 
 
 # ============================================================
@@ -376,6 +466,7 @@ if __name__ == '__main__':
     dummy_st = np.array([50, 100], dtype=np.int64)
     run_eps_exp3(2, 1, 100, dummy_lp, 1, 0.1, np.array([0.0]), dummy_st)
     run_exp3(2, 1, 100, dummy_lp, 1, 0.1, dummy_st)
+    run_exp3_qv(2, 1, 100, dummy_lp, 1, np.array([0.1]), dummy_st)
     print("JIT ready.\n")
 
     plot_results(configs, T)
