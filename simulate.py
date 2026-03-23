@@ -498,7 +498,7 @@ if __name__ == '__main__':
     # Run requested configs with selected change_time ratios.
     pmin = 0.2
     T = 10_000_000  # Full experiment
-    configs = [(2, 4), (3, 3), (4, 2)]
+    configs = [(2, 5)]
     target_change_times = [0.01, 0.03]
 
     # JIT warm-up
