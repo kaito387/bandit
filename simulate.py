@@ -253,12 +253,12 @@ def run_exp3(K, S, T, leaf_probs_init, change_time, eta, sample_times):
 
 
 @njit(cache=True)
-def run_exp3_qv(K, S, T, leaf_probs_init, change_time, eta_arr, sample_times):
+def run_exp3_qv(K, S, T, leaf_probs_init, change_time, eta, sample_times):
     """
-    One trial of EXP3 with path-context correction and level-dependent eta.
+    One trial of EXP3 with path-context correction and scalar eta.
     Same forward policy as standard EXP3, but backward update uses q_v
     (probability that node v receives the job) in denominator.
-    eta_arr[l] is used by nodes at level l.
+    eta follows the standard EXP3 choice.
     """
     total_w = 0
     offsets = np.empty(S, dtype=np.int64)
@@ -283,13 +283,12 @@ def run_exp3_qv(K, S, T, leaf_probs_init, change_time, eta_arr, sample_times):
         for l in range(S):
             path_nodes[l] = node_idx
             w_start = offsets[l] + node_idx * K
-            eta_l = eta_arr[l]
 
             neg_L = np.empty(K)
             for c in range(K):
                 neg_L[c] = -L[w_start + c]
 
-            p = _softmax(eta_l, neg_L, K)
+            p = _softmax(eta, neg_L, K)
 
             chosen = _sample_from(p, K)
             path_children[l] = chosen
@@ -336,7 +335,9 @@ def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200, change_time=None
     sample_times = np.linspace(T // num_samples, T, num_samples).astype(np.int64)
 
     # epsilon-EXP3 params (Lemma 4)
-    eta = T ** (-float(S) / (S + 1))
+    eta_eps = T ** (-float(S) / (S + 1))
+    # EXP3-style eta: sqrt(2 log K / (T K))
+    eta_exp3 = np.sqrt(2.0 * np.log(K) / (T * K))
     pi_arr = np.empty(S)
     for l in range(S):
         if l == S - 1:
@@ -345,27 +346,21 @@ def run_experiment(K, S, pmin, T, num_runs=20, num_samples=200, change_time=None
         else:
             pi_arr[l] = T ** (-1.0 / (S + 1))
 
-    # EXP3-qv uses level-dependent eta from subtree leaf count
-    eta_qv_arr = np.empty(S)
-    for l in range(S):
-        leaves_in_subtree = K ** (S - l)
-        eta_qv_arr[l] = np.sqrt(2.0 * np.log(leaves_in_subtree) / (T * leaves_in_subtree))
-
     # Storage
     eps_costs_all = np.zeros((num_runs, num_samples))
     exp3_qv_costs_all = np.zeros((num_runs, num_samples))
 
-    print(f"  Config: K={K}, S={S}, pmin={pmin}, T={T}, eta={eta:.6f}, "
+    print(f"  Config: K={K}, S={S}, pmin={pmin}, T={T}, eta_eps={eta_eps:.6f}, "
             f"pi={pi_arr[0]:.6f}, "
-            f"eta_qv_root={eta_qv_arr[0]:.6f}, eta_qv_leafparent={eta_qv_arr[S-1]:.6f}")
+            f"eta_qv={eta_exp3:.6f}")
 
     for run in range(num_runs):
         t0 = time.time()
         eps_costs_all[run] = run_eps_exp3(
-            K, S, T, leaf_probs, change_time, eta, pi_arr, sample_times)
+            K, S, T, leaf_probs, change_time, eta_eps, pi_arr, sample_times)
         t1 = time.time()
         exp3_qv_costs_all[run] = run_exp3_qv(
-            K, S, T, leaf_probs, change_time, eta_qv_arr, sample_times)
+            K, S, T, leaf_probs, change_time, eta_exp3, sample_times)
         t2 = time.time()
         if run < 3 or (run + 1) % 5 == 0:
             print(
@@ -431,13 +426,17 @@ def plot_results(configs, T):
     print("\nSaved regret.png")
 
 
-def plot_change_time_comparison(K, S, pmin, T):
-    """Plot 4 subplots comparing different change_time values."""
-    change_times = [0.01, 0.03, 0.05, 0.10]
+def plot_change_time_comparison(K, S, pmin, T, change_times=None):
+    """Plot subplots comparing different change_time values."""
+    if change_times is None:
+        change_times = [0.01, 0.02, 0.03, 0.05, 0.07, 0.10]
     change_time_samples = [int(ct * T) for ct in change_times]
-    
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    axes_flat = axes.flatten()
+
+    n = len(change_times)
+    ncols = min(3, n)
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5 * nrows))
+    axes_flat = np.atleast_1d(axes).flatten()
     
     for idx, (ct_label, ct_value) in enumerate(zip(change_times, change_time_samples)):
         print(f"\n=== Experiment {idx+1}/{len(change_times)}: K={K}, S={S}, change_time={ct_label}T ===")
@@ -480,10 +479,15 @@ def plot_change_time_comparison(K, S, pmin, T):
         ax.set_ylabel('Time-avg regret')
         ax.legend(fontsize=9)
         ax.set_ylim(bottom=0)
+
+    # Hide any unused axes when grid is larger than number of experiments.
+    for i in range(len(change_times), len(axes_flat)):
+        axes_flat[i].axis('off')
     
     plt.tight_layout()
-    plt.savefig('change_time_comparison.png', dpi=150)
-    print("\nSaved change_time_comparison.png")
+    out_file = f'change_time_comparison_K{K}_S{S}.png'
+    plt.savefig(out_file, dpi=150)
+    print(f"\nSaved {out_file}")
 
 
 # ============================================================
@@ -491,16 +495,19 @@ def plot_change_time_comparison(K, S, pmin, T):
 # ============================================================
 
 if __name__ == '__main__':
-    # Use new experiment: K=2, S=4 with different change_time values
-    K, S, pmin = 2, 4, 0.2
-    T = 1_000_000  # Full experiment
+    # Run requested configs with selected change_time ratios.
+    pmin = 0.2
+    T = 10_000_000  # Full experiment
+    configs = [(2, 4), (3, 3), (4, 2)]
+    target_change_times = [0.01, 0.03]
 
     # JIT warm-up
     print("Warming up Numba JIT...")
     dummy_lp = np.array([0.5, 1.0])
     dummy_st = np.array([50, 100], dtype=np.int64)
-    run_eps_exp3(2, 1, 100, dummy_lp, 1, 0.1, np.array([0.0]), dummy_st)
-    run_exp3_qv(2, 1, 100, dummy_lp, 1, np.array([0.1]), dummy_st)
+    run_eps_exp3(2, 2, 100, dummy_lp, 5, 0.1, np.array([0.0]), dummy_st)
+    run_exp3_qv(2, 2, 100, dummy_lp, 5, 0.1, dummy_st)
     print("JIT ready.\n")
 
-    plot_change_time_comparison(K, S, pmin, T)
+    for K, S in configs:
+        plot_change_time_comparison(K, S, pmin, T, change_times=target_change_times)
