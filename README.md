@@ -81,17 +81,8 @@ pip install numpy numba matplotlib
 ## 运行
 
 ```bash
-# 完整实验 (约 5 分钟)
+# 完整实验 (约 8 分钟)
 python3 simulate.py
-
-# 快速测试
-python3 test_quick.py
-
-# 验证 regret 数值
-python3 verify.py
-
-# 性能基准
-python3 bench.py
 ```
 
 ## 主要结果
