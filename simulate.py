@@ -496,9 +496,9 @@ def plot_change_time_comparison(K, S, pmin, T, change_times=None):
 
 if __name__ == '__main__':
     # Run requested configs with selected change_time ratios.
-    pmin = 0.2
+    pmin = 0.5
     T = 10_000_000  # Full experiment
-    configs = [(2, 5)]
+    configs = [(4, 3), (4, 4)]
     target_change_times = [0.01, 0.03]
 
     # JIT warm-up
