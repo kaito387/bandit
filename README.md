@@ -7,9 +7,6 @@
 | 文件 | 说明 |
 |------|------|
 | `simulate.py` | **主程序**。实现 ε-EXP3 和标准 EXP3 算法，运行 6 组实验并生成 Fig.3 |
-| `verify.py` | 验证脚本，输出 regret 数值确认算法行为是否符合论文预期 |
-| `bench.py` | 性能基准测试，估算不同 (K, S) 配置的运行时间 |
-| `test_quick.py` | 快速冒烟测试，验证两个算法能正确编译和运行 |
 | `fig3_regret.png` | 实验输出图（对应论文 Fig. 3） |
 | `multistage-noted.pdf` | 原始论文 |
 
