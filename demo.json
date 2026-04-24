@@ -1,0 +1,30 @@
+[{
+  "env_name": "caterpillarS2K5",
+  "algo": ["PS", "EE3", "E3"],
+  "seed": 67,
+  "node_counts": 10,
+  "rounds": 200000,
+  "parents": [
+    0, 0, 1, 1, 3, 3, 5, 5, 5
+  ],
+  "g": [1, 0, 1, 0, 1, 0, 1, 1, 1],
+  "p": [0, 0.2, 0, 0.4, 0, 0.8, 0.02, 1, 1],
+  "distribution": {
+    "7": "TimeVariant"
+  }
+}, {
+  "env_name": "fullBinaryTreeS2K2",
+  "algo": ["PS", "EE3", "E3"],
+  "seed": 67,
+  "node_counts": 7,
+  "rounds": 200000,
+  "parents": [
+    0, 0, 1, 1, 2, 2
+  ],
+  "g": [1, 0, 1, 1, 1, 1],
+  "p": [0, 0, 0.01, 0.6, 0.4, 0.2],
+  "distribution": {
+    "3": "TimeVariant"
+  }
+}
+]

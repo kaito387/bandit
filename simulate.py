@@ -479,13 +479,13 @@ def _run_algo_numba(
             chosen_slot = 0
             chosen_prob = 1.0 / cnt
 
-            if algo_id == 4:
+            if algo_id == 4: # Random
                 for i in range(cnt):
                     temp_probs[i] = 1.0 / cnt
                 chosen_slot = int(np.random.randint(0, cnt))
                 chosen_prob = temp_probs[chosen_slot]
 
-            elif algo_id == 5:
+            elif algo_id == 5: # Q-learning
                 chosen_slot = 0
                 best_q = q[child_list[start]]
                 for i in range(1, cnt):
@@ -495,7 +495,7 @@ def _run_algo_numba(
                         chosen_slot = i
                 chosen_prob = 1.0
 
-            elif algo_id == 1:
+            elif algo_id == 1: # PS
                 if is_safe[node] == 1:
                     total_w = w[node]
                     if total_w <= EPS:
@@ -515,12 +515,12 @@ def _run_algo_numba(
                     chosen_slot = _sample_discrete(temp_probs, cnt)
                     chosen_prob = max(temp_probs[chosen_slot], EPS)
 
-            elif algo_id == 2 or algo_id == 6:
+            elif algo_id == 2 or algo_id == 6: # E3 or E3Q
                 _softmax_child(theta, child_list, start, cnt, eta_e3, temp_probs)
                 chosen_slot = _sample_discrete(temp_probs, cnt)
                 chosen_prob = max(temp_probs[chosen_slot], EPS)
 
-            else:
+            else: # EE3
                 _softmax_child(theta, child_list, start, cnt, eta_ee3, temp_probs)
                 for i in range(cnt):
                     temp_probs[i] = epsilon / cnt + (1.0 - epsilon) * temp_probs[i]
@@ -544,7 +544,7 @@ def _run_algo_numba(
         accum[t] = cum_reg
         avg[t] = cum_reg / float(t + 1)
 
-        if algo_id == 1:
+        if algo_id == 1: # PS
             pi_leaf = max(prob_to_node[leaf], EPS)
             delta = math.exp(theta[leaf] - c / pi_leaf) - math.exp(theta[leaf])
             cur = leaf
@@ -553,19 +553,19 @@ def _run_algo_numba(
                 theta[cur] -= c / max(prob_to_node[cur], EPS)
                 cur = parent[cur]
 
-        elif algo_id == 2:
+        elif algo_id == 2: # E3
             cur = leaf
             while cur != -1:
                 theta[cur] -= c / max(local_prob[cur], EPS)
                 cur = parent[cur]
 
-        elif algo_id == 3 or algo_id == 6:
+        elif algo_id == 3 or algo_id == 6: # EE3 or E3Q
             cur = leaf
             while cur != -1:
                 theta[cur] -= c / max(prob_to_node[cur], EPS)
                 cur = parent[cur]
 
-        elif algo_id == 5:
+        elif algo_id == 5: # Q-learning
             cur = leaf
             while cur != -1:
                 count_seen[cur] += 1
