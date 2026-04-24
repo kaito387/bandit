@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 target/
 results*/
+
+.github/prompts/

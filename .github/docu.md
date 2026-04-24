@@ -38,9 +38,8 @@
 ## 算法 1：Partial Share
 
 ```plain
-theta[u] = 0 forall u
-W[u] = leafCount[u] for all u
-// actually, W[u] = sum exp(theta[l]) for leaves l in subtree[u]
+theta[u] = 0
+W[u] = sum exp(theta[l]) for all leaves l in subtree[u]
 epsilon = S * power(T, -1 / (K + 1))
 eta = power(T, -R / (R + 1))
 
@@ -60,9 +59,7 @@ for t = 1..T do
 	END WHILE
 	// u is Leaf
 	observe cost c[t] from u
-	Delta = exp(theta[u] - c[t] / Pi[u]) - exp(theta[u])
 	while u is not -1	// fa[root] = -1
-		W[u] += Delta
 		theta[u] -= c[t] / Pi[u]
 		u = fa[u]
 	ENDWHILE

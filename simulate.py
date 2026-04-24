@@ -88,6 +88,9 @@ class PreparedEnvironment:
     d: np.ndarray
     max_branching: int
     leaf_count: np.ndarray
+    subtree_leaf_start: np.ndarray
+    subtree_leaf_count: np.ndarray
+    subtree_leaves: np.ndarray
     risk: np.ndarray
     r0: int
     need_explore: np.ndarray
@@ -304,6 +307,40 @@ def _prepare_environment(raw: EnvironmentInput) -> PreparedEnvironment:
         risk[u] = (1 - safe) + max_risk_child
         need_explore[u] = explore_needed
 
+    # Precompute flattened leaf lists for each subtree to support stable on-demand W[v]/W[u].
+    children: List[List[int]] = [[] for _ in range(n)]
+    for node in range(1, n):
+        children[int(parent[node])].append(node)
+
+    subtree_leaf_nodes: List[List[int]] = [[] for _ in range(n)]
+
+    def collect_subtree_leaves(u: int) -> List[int]:
+        if is_leaf[u] == 1:
+            subtree_leaf_nodes[u] = [u]
+            return subtree_leaf_nodes[u]
+
+        merged: List[int] = []
+        for v in children[u]:
+            merged.extend(collect_subtree_leaves(v))
+        subtree_leaf_nodes[u] = merged
+        return merged
+
+    collect_subtree_leaves(0)
+
+    subtree_leaf_start = np.zeros(n, dtype=np.int64)
+    subtree_leaf_count = np.zeros(n, dtype=np.int64)
+    total_entries = sum(len(x) for x in subtree_leaf_nodes)
+    subtree_leaves = np.empty(total_entries, dtype=np.int64)
+    offset = 0
+    for u in range(n):
+        leaves_u = subtree_leaf_nodes[u]
+        cnt_u = len(leaves_u)
+        subtree_leaf_start[u] = offset
+        subtree_leaf_count[u] = cnt_u
+        for i, leaf in enumerate(leaves_u):
+            subtree_leaves[offset + i] = int(leaf)
+        offset += cnt_u
+
     leaves = np.where(is_leaf == 1)[0].astype(np.int64)
     if leaves.shape[0] == 0:
         raise ValueError(f"env {raw.env_name} has no leaves")
@@ -354,6 +391,9 @@ def _prepare_environment(raw: EnvironmentInput) -> PreparedEnvironment:
         d=d,
         max_branching=max_branching,
         leaf_count=leaf_count,
+        subtree_leaf_start=subtree_leaf_start,
+        subtree_leaf_count=subtree_leaf_count,
+        subtree_leaves=subtree_leaves,
         risk=risk,
         r0=int(risk[0]),
         need_explore=need_explore,
@@ -412,6 +452,70 @@ def _sample_leaf_cost(dist_code: int, p: float, t: int, rounds: int) -> float:
 
 
 @njit(cache=True)
+def _logsumexp_subtree(
+    node: int,
+    eta: float,
+    theta: np.ndarray,
+    subtree_leaf_start: np.ndarray,
+    subtree_leaf_count: np.ndarray,
+    subtree_leaves: np.ndarray,
+) -> float:
+    start = subtree_leaf_start[node]
+    cnt = subtree_leaf_count[node]
+    if cnt <= 0:
+        return -1.0e300
+
+    first_leaf = subtree_leaves[start]
+    max_theta = eta * float(theta[int(first_leaf)])
+    for i in range(1, cnt):
+        leaf = subtree_leaves[start + i]
+        val = eta * float(theta[int(leaf)])
+        if val > max_theta:
+            max_theta = val
+
+    s = 0.0
+    for i in range(cnt):
+        leaf = subtree_leaves[start + i]
+        s += math.exp(eta * float(theta[int(leaf)]) - max_theta)
+    if s <= EPS:
+        s = EPS
+
+    return max_theta + math.log(s)
+
+
+@njit(cache=True)
+def _stable_ps_safe_probs(
+    node: int,
+    start: int,
+    cnt: int,
+    child_list: np.ndarray,
+    eta_ps: float,
+    theta: np.ndarray,
+    subtree_leaf_start: np.ndarray,
+    subtree_leaf_count: np.ndarray,
+    subtree_leaves: np.ndarray,
+    out_probs: np.ndarray,
+) -> None:
+    log_w_u = _logsumexp_subtree(node, eta_ps, theta, subtree_leaf_start, subtree_leaf_count, subtree_leaves)
+
+    total = 0.0
+    for i in range(cnt):
+        child = child_list[start + i]
+        log_w_v = _logsumexp_subtree(child, eta_ps, theta, subtree_leaf_start, subtree_leaf_count, subtree_leaves)
+        ratio = math.exp(log_w_v - log_w_u)
+        if ratio < 0.0:
+            ratio = 0.0
+        out_probs[i] = ratio
+        total += ratio
+
+    if total <= EPS:
+        raise ValueError("underflowed")
+    else:
+        for i in range(cnt):
+            out_probs[i] /= total
+
+
+@njit(cache=True)
 def _run_algo_numba(
     algo_id: int,
     seed: int,
@@ -427,6 +531,9 @@ def _run_algo_numba(
     leaf_prob: np.ndarray,
     leaf_distribution: np.ndarray,
     leaf_count: np.ndarray,
+    subtree_leaf_start: np.ndarray,
+    subtree_leaf_count: np.ndarray,
+    subtree_leaves: np.ndarray,
     need_explore: np.ndarray,
     depth_value: int,
     max_branching: int,
@@ -437,7 +544,6 @@ def _run_algo_numba(
     np.random.seed(seed)
 
     theta = np.zeros(n, dtype=np.float64)
-    w = leaf_count.astype(np.float64)
     q = np.ones(n, dtype=np.float64)
     count_seen = np.zeros(n, dtype=np.int64)
 
@@ -497,14 +603,18 @@ def _run_algo_numba(
 
             elif algo_id == 1: # PS
                 if is_safe[node] == 1:
-                    total_w = w[node]
-                    if total_w <= EPS:
-                        for i in range(cnt):
-                            temp_probs[i] = 1.0 / cnt
-                    else:
-                        for i in range(cnt):
-                            child = child_list[start + i]
-                            temp_probs[i] = max(w[child], 0.0) / total_w
+                    _stable_ps_safe_probs(
+                        node, # IGNORE
+                        start,
+                        cnt,
+                        child_list,
+                        eta_ps,
+                        theta,
+                        subtree_leaf_start,
+                        subtree_leaf_count,
+                        subtree_leaves,
+                        temp_probs,
+                    )
                     chosen_slot = _sample_discrete(temp_probs, cnt)
                     chosen_prob = max(temp_probs[chosen_slot], EPS)
                 else:
@@ -545,11 +655,8 @@ def _run_algo_numba(
         avg[t] = cum_reg / float(t + 1)
 
         if algo_id == 1: # PS
-            pi_leaf = max(prob_to_node[leaf], EPS)
-            delta = math.exp(theta[leaf] - c / pi_leaf) - math.exp(theta[leaf])
             cur = leaf
             while cur != -1:
-                w[cur] += delta
                 theta[cur] -= c / max(prob_to_node[cur], EPS)
                 cur = parent[cur]
 
@@ -646,6 +753,9 @@ def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
                 env.leaf_prob,
                 env.leaf_distribution,
                 env.leaf_count,
+                env.subtree_leaf_start,
+                env.subtree_leaf_count,
+                env.subtree_leaves,
                 env.need_explore,
                 int(env.depth_value),
                 int(max(env.max_branching, 1)),
