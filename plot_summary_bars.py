@@ -22,6 +22,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+def _require_wandb() -> Any:
+    try:
+        import wandb
+    except ImportError as exc:
+        raise ImportError(
+            "wandb is required for this workflow. Install it with: pip install wandb"
+        ) from exc
+    return wandb
+
+
 METRICS: Sequence[tuple[str, str, str]] = (
     ("avgCost", "avgCost", "avgCost"),
     ("bestPathRate", "bestPathRate", "bestPathRate"),
@@ -86,7 +96,8 @@ def _annotate_bars(ax: plt.Axes, bars: Any, values: np.ndarray) -> None:
         )
 
 
-def plot_summary_bars(summary_path: Path, output_path: Path) -> None:
+def plot_summary_bars(summary_path: Path) -> None:
+    wandb = _require_wandb()
     env_name, algorithms_summary = _load_summary(summary_path)
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -119,8 +130,7 @@ def plot_summary_bars(summary_path: Path, output_path: Path) -> None:
 
     fig.suptitle(f"Algorithm Summary Comparison ({env_name})", fontsize=15, y=0.98)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=160)
+    wandb.log({"charts/summary_bars": wandb.Image(fig)})
     plt.close(fig)
 
 
@@ -129,19 +139,37 @@ def parse_args() -> argparse.Namespace:
         description="Plot algorithm comparison bar charts from a summary.json file",
     )
     parser.add_argument("--input", required=True, help="path to summary.json")
+    parser.add_argument("--wandb-project", default="bandit", help="WandB project name")
+    parser.add_argument("--wandb-entity", default="kaito15-sun-yat-sen-university", help="WandB entity/team")
+    parser.add_argument("--wandb-group", default=None, help="optional WandB group")
     parser.add_argument(
-        "--output",
-        help="path to save the PNG file; defaults to <summary-dir>/algorithms_summary_bars.png",
+        "--wandb-mode",
+        default="online",
+        choices=["online", "offline", "disabled"],
+        help="WandB mode",
     )
     return parser.parse_args()
 
 
 def main() -> None:
+    wandb = _require_wandb()
     args = parse_args()
     summary_path = Path(args.input)
-    output_path = Path(args.output) if args.output else summary_path.with_name("algorithms_summary_bars.png")
-    plot_summary_bars(summary_path, output_path)
-    print(f"wrote {output_path}")
+    run = wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.wandb_group,
+        job_type="summary_bars",
+        name=f"{summary_path.parent.name}-summary-bars",
+        mode=args.wandb_mode,
+        reinit=True,
+    )
+    try:
+        plot_summary_bars(summary_path)
+    finally:
+        run.finish()
+
+    print(f"logged summary bars from {summary_path} to WandB")
 
 
 if __name__ == "__main__":

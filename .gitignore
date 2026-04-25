@@ -7,3 +7,5 @@ results*/
 .github/prompts/
 
 .env
+
+wandb/

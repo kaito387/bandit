@@ -14,7 +14,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import matplotlib
 import numpy as np
@@ -26,6 +26,19 @@ import matplotlib.pyplot as plt
 
 EPS = 1e-12
 NUM_AVERAGE_RUNS = 20
+
+DYNAMIC_TABLE_COLUMNS = [
+    "env_name",
+    "algo",
+    "t",
+    "cost",
+    "regret",
+    "accumRegret",
+    "avgRegret",
+    "bestPathRate",
+    "shareRate",
+    "runs",
+]
 
 ALGO_CODE_TO_ID = {
     "PS": 1,
@@ -822,7 +835,18 @@ def _run_algo_numba(
     return cost, leaf_used, regret, accum, avg, leaf_probs
 
 
-def _plot_avg_regret(csv_rows: List[Dict[str, int | float | str]], env_name: str, output_path: Path) -> None:
+def _require_wandb() -> Any:
+    try:
+        import wandb
+    except ImportError as exc:
+        raise ImportError(
+            "wandb is required for this workflow. Install it with: pip install wandb"
+        ) from exc
+    return wandb
+
+
+def _log_avg_regret_plot(csv_rows: List[Dict[str, int | float | str]], env_name: str) -> None:
+    wandb = _require_wandb()
     algos = sorted({row["algo"] for row in csv_rows})
     plt.figure(figsize=(10, 6))
     for algo in algos:
@@ -845,17 +869,17 @@ def _plot_avg_regret(csv_rows: List[Dict[str, int | float | str]], env_name: str
     plt.ylabel("avgRegret[t]")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(output_path, dpi=160)
+    wandb.log({"charts/avg_regret": wandb.Image(plt.gcf())})
     plt.close()
 
 
-def _plot_leaf_probabilities(
+def _log_leaf_probabilities(
     leaf_probs: np.ndarray,
     leaves: np.ndarray,
     env_name: str,
     algo_name: str,
-    output_path: Path,
 ) -> None:
+    wandb = _require_wandb()
     plt.figure(figsize=(11, 6))
     ts = np.arange(1, leaf_probs.shape[0] + 1, dtype=np.int64)
     for leaf in leaves:
@@ -867,23 +891,113 @@ def _plot_leaf_probabilities(
     plt.ylim(0.0, 1.0)
     plt.legend(fontsize=8, ncol=2)
     plt.tight_layout()
-    plt.savefig(output_path, dpi=160)
+    wandb.log({f"charts/leaf_prob_{algo_name}": wandb.Image(plt.gcf())})
     plt.close()
 
 
-def _write_csv(rows: List[Dict[str, int | float | str]], output_file: Path) -> None:
-    headers = ["env_name", "algo", "t", "cost", "regret", "accumRegret", "avgRegret", "bestPathRate", "shareRate", "runs"]
-    lines = [",".join(headers)]
+def _log_dynamic_table(rows: List[Dict[str, int | float | str]]) -> None:
+    wandb = _require_wandb()
+    table = wandb.Table(columns=DYNAMIC_TABLE_COLUMNS)
     for row in rows:
-        lines.append(
-            f"{row['env_name']},{row['algo']},{int(row['t'])},"
-            f"{row['cost']:.10f},{row['regret']:.10f},{row['accumRegret']:.10f},{row['avgRegret']:.10f},"
-            f"{row['bestPathRate']:.10f},{row['shareRate']:.10f},{int(row['runs'])}"
+        table.add_data(
+            str(row["env_name"]),
+            str(row["algo"]),
+            int(row["t"]),
+            float(row["cost"]),
+            float(row["regret"]),
+            float(row["accumRegret"]),
+            float(row["avgRegret"]),
+            float(row["bestPathRate"]),
+            float(row["shareRate"]),
+            int(row["runs"]),
         )
-    output_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    wandb.log({"tables/dynamic_metrics": table})
 
 
-def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
+def _log_summary_bars(env_name: str, summary_algorithms: Dict[str, Dict[str, float]]) -> None:
+    wandb = _require_wandb()
+    metrics = [
+        ("avgCost", "avgCost", "avgCost"),
+        ("bestPathRate", "bestPathRate", "bestPathRate"),
+        ("finalAccumRegret", "finalAccumRegret", "finalAccumRegret"),
+        ("finalAvgRegret", "finalAvgRegret", "finalAvgRegret"),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes_flat = axes.ravel()
+    colors = ["#4C78A8", "#F58518", "#54A24B", "#E45756"]
+    algorithms = list(summary_algorithms.keys())
+
+    for idx, (metric, title, ylabel) in enumerate(metrics):
+        values = np.asarray([float(summary_algorithms[algo][metric]) for algo in algorithms], dtype=np.float64)
+        ax = axes_flat[idx]
+        x = np.arange(len(algorithms))
+        bars = ax.bar(x, values, color=colors[idx % len(colors)], width=0.68)
+
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(x)
+        ax.set_xticklabels(algorithms, rotation=25, ha="right")
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+
+        y_min, y_max = ax.get_ylim()
+        span = max(y_max - y_min, 1e-12)
+        offset = span * 0.02
+        for bar, value in zip(bars, values):
+            x_txt = bar.get_x() + bar.get_width() / 2.0
+            y_txt = bar.get_height()
+            ax.text(x_txt, y_txt + offset, f"{value:.4g}", ha="center", va="bottom", fontsize=9)
+
+    fig.suptitle(f"Algorithm Summary Comparison ({env_name})", fontsize=15, y=0.98)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    wandb.log({"charts/summary_bars": wandb.Image(fig)})
+    plt.close(fig)
+
+
+def _init_wandb_run(args: argparse.Namespace, env: PreparedEnvironment, job_type: str) -> Any:
+    wandb = _require_wandb()
+    config = {
+        "env_name": env.env_name,
+        "seed": int(env.seed),
+        "node_counts": int(env.n),
+        "rounds": int(env.rounds),
+        "algorithms": [ALGO_ID_TO_NAME[int(x)] for x in env.algo_ids],
+        "num_average_runs": int(NUM_AVERAGE_RUNS),
+    }
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.wandb_group,
+        job_type=job_type,
+        name=env.env_name,
+        mode=args.wandb_mode,
+        config=config,
+        reinit=True,
+    )
+
+
+def _log_summary_payload(summary: Dict[str, Any]) -> None:
+    wandb = _require_wandb()
+
+    wandb.config.update(
+        {
+            "simulation_parameters": summary["simulation_parameters"],
+            "tree_metrics": summary["tree_metrics"],
+        },
+        allow_val_change=True,
+    )
+
+    wandb.summary["env_name"] = summary["env_name"]
+    wandb.summary["runs"] = int(summary["runs"])
+    wandb.summary["bestPath"] = int(summary["tree_metrics"]["bestPath"])
+    wandb.summary["bestPathP"] = float(summary["tree_metrics"]["bestPathP"])
+
+    for algo_name, metrics in summary["algorithms_summary"].items():
+        for key, value in metrics.items():
+            wandb.summary[f"algorithms_summary/{algo_name}/{key}"] = value
+
+
+def _simulate_one_env(env: PreparedEnvironment) -> None:
     rows: List[Dict[str, int | float | str]] = []
     summary_algorithms: Dict[str, Dict[str, float]] = {}
     eps_ee3 = env.max_branching * (env.rounds ** (-1.0 / (env.depth_value + 1.0)))
@@ -977,15 +1091,8 @@ def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
                 }
             )
 
-    env_dir = output_dir / env.env_name
-    env_dir.mkdir(parents=True, exist_ok=True)
-
-    csv_path = env_dir / "dynamic_metrics.csv"
-    json_path = env_dir / "summary.json"
-    plot_path = env_dir / "avg_regret.png"
-
-    _write_csv(rows, csv_path)
-    _plot_avg_regret(rows, env.env_name, plot_path)
+    _log_dynamic_table(rows)
+    _log_avg_regret_plot(rows, env.env_name)
 
     summary = {
         "env_name": env.env_name,
@@ -1017,24 +1124,16 @@ def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
             "depth": int(env.depth_value),
         },
         "algorithms_summary": summary_algorithms,
-        "files": {
-            "csv": str(csv_path),
-            "json": str(json_path),
-            "plot": str(plot_path),
-        },
     }
 
-    json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    print(f"[{env.env_name}] wrote {csv_path}")
-    print(f"[{env.env_name}] wrote {json_path}")
-    print(f"[{env.env_name}] wrote {plot_path}")
+    _log_summary_payload(summary)
+    _log_summary_bars(env.env_name, summary_algorithms)
+    print(f"[{env.env_name}] logged avg-regret chart, dynamic table, summary, and summary-bars to WandB")
 
 
 def run_env_leaf_prob(env: PreparedEnvironment, output_dir: Path) -> None:
+    _ = output_dir  # kept for backward-compatible API shape
     rows: List[Dict[str, int | float | str]] = []
-    env_dir = output_dir / env.env_name
-    env_dir.mkdir(parents=True, exist_ok=True)
 
     for idx, algo_id in enumerate(env.algo_ids):
         algo_name = ALGO_ID_TO_NAME[int(algo_id)]
@@ -1085,13 +1184,10 @@ def run_env_leaf_prob(env: PreparedEnvironment, output_dir: Path) -> None:
                 }
             )
 
-        plot_path = env_dir / f"leaf_prob_{algo_name}.png"
-        _plot_leaf_probabilities(leaf_probs, env.leaves, env.env_name, algo_name, plot_path)
-        print(f"[{env.env_name}] wrote {algo_name} leaf plot: {plot_path}")
+        _log_leaf_probabilities(leaf_probs, env.leaves, env.env_name, algo_name)
 
-    csv_path = env_dir / "dynamic_metrics.csv"
-    _write_csv(rows, csv_path)
-    print(f"[{env.env_name}] wrote {csv_path}")
+    _log_dynamic_table(rows)
+    print(f"[{env.env_name}] logged leaf-prob charts and dynamic table to WandB")
 
 
 def _load_environments(input_file: Path) -> List[PreparedEnvironment]:
@@ -1112,29 +1208,42 @@ def load_environments(input_file: Path) -> List[PreparedEnvironment]:
 
 
 def write_dynamic_csv(rows: List[Dict[str, int | float | str]], output_file: Path) -> None:
-    _write_csv(rows, output_file)
+    _ = output_file
+    _log_dynamic_table(rows)
 
 
 def run_env_avg_regret(env: PreparedEnvironment, output_dir: Path) -> None:
-    _simulate_one_env(env, output_dir)
+    _ = output_dir
+    _simulate_one_env(env)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Multistage bandit simulator (JSON + Numba)")
     parser.add_argument("--input", required=True, help="path to JSON file (array of environments)")
-    parser.add_argument("--output-dir", default="results_json", help="output directory")
+    parser.add_argument("--output-dir", default="results_json", help="unused; kept for backward compatibility")
+    parser.add_argument("--wandb-project", default="bandit", help="WandB project name")
+    parser.add_argument("--wandb-entity", default="kaito15-sun-yat-sen-university", help="WandB entity/team")
+    parser.add_argument("--wandb-group", default=None, help="optional WandB group")
+    parser.add_argument(
+        "--wandb-mode",
+        default="online",
+        choices=["online", "offline", "disabled"],
+        help="WandB mode",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     input_file = Path(args.input)
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     envs = _load_environments(input_file)
     for env in envs:
-        _simulate_one_env(env, output_dir)
+        run = _init_wandb_run(args, env, job_type="avg_regret")
+        try:
+            _simulate_one_env(env)
+        finally:
+            run.finish()
 
 
 if __name__ == "__main__":
