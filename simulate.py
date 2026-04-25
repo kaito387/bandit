@@ -440,7 +440,7 @@ def _sample_bernoulli(p: float) -> float:
 
 @njit(cache=True)
 def _sample_timevariant(p: float, t_ratio: float) -> float:
-    return 1.0 if p < t_ratio else 0.0
+    return 1.0 if t_ratio < p else 0.0
 
 
 @njit(cache=True)
@@ -547,11 +547,9 @@ def _run_algo_numba(
     q = np.ones(n, dtype=np.float64)
     count_seen = np.zeros(n, dtype=np.int64)
 
-    epsilon = max_branching * (rounds ** (-1.0 / (depth_value + 1.0))) if depth_value >= 0 else 0.0
-    if epsilon < 0.0:
-        epsilon = 0.0
-    if epsilon > 1.0:
-        epsilon = 1.0
+    epsilon_ee3 = max_branching * (rounds ** (-1.0 / (depth_value + 1.0))) if depth_value >= 0 else 0.0
+    epsilon_ps = max_branching * (rounds ** (-1.0 / (r0 + 1.0))) if r0 >= 0 else 0.0
+    # NOTE in paper, ps = di * ..., here we use max_branching instead for simplicity
 
     eta_ps = rounds ** (-float(r0) / (r0 + 1.0)) if r0 > 0 else 1.0
     eta_e3 = math.sqrt(math.log(max(max_branching, 2)) / (rounds * max(max_branching, 1)))
@@ -604,7 +602,7 @@ def _run_algo_numba(
             elif algo_id == 1: # PS
                 if is_safe[node] == 1:
                     _stable_ps_safe_probs(
-                        node, # IGNORE
+                        int(node),
                         start,
                         cnt,
                         child_list,
@@ -618,7 +616,7 @@ def _run_algo_numba(
                     chosen_slot = _sample_discrete(temp_probs, cnt)
                     chosen_prob = max(temp_probs[chosen_slot], EPS)
                 else:
-                    real_eps = epsilon if need_explore[node] == 1 else 0.0
+                    real_eps = epsilon_ps if need_explore[node] == 1 else 0.0
                     _softmax_child(theta, child_list, start, cnt, eta_ps, temp_probs)
                     for i in range(cnt):
                         temp_probs[i] = real_eps / cnt + (1.0 - real_eps) * temp_probs[i]
@@ -633,7 +631,7 @@ def _run_algo_numba(
             else: # EE3
                 _softmax_child(theta, child_list, start, cnt, eta_ee3, temp_probs)
                 for i in range(cnt):
-                    temp_probs[i] = epsilon / cnt + (1.0 - epsilon) * temp_probs[i]
+                    temp_probs[i] = epsilon_ee3 / cnt + (1.0 - epsilon_ee3) * temp_probs[i]
                 chosen_slot = _sample_discrete(temp_probs, cnt)
                 chosen_prob = max(temp_probs[chosen_slot], EPS)
 
@@ -724,6 +722,11 @@ def _write_csv(rows: List[Dict[str, int | float | str]], output_file: Path) -> N
 def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
     rows: List[Dict[str, int | float | str]] = []
     summary_algorithms: Dict[str, Dict[str, float]] = {}
+    eps_ee3 = env.max_branching * (env.rounds ** (-1.0 / (env.depth_value + 1.0)))
+    eps_ps = env.max_branching * (env.rounds ** (-1.0 / (env.r0 + 1.0)))
+    eta_ps = env.rounds ** (-float(env.r0) / (env.r0 + 1.0)) if env.r0 > 0 else 1.0
+    eta_e3 = math.sqrt(math.log(max(int(env.max_branching), 2)) / (env.rounds * max(int(env.max_branching), 1)))
+    eta_ee3 = env.rounds ** (-float(env.depth_value) / (env.depth_value + 1.0))
 
     for idx, algo_id in enumerate(env.algo_ids):
         algo_name = ALGO_ID_TO_NAME[int(algo_id)]
@@ -825,6 +828,14 @@ def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
         "node_counts": env.n,
         "rounds": env.rounds,
         "runs": int(NUM_AVERAGE_RUNS),
+        "simulation_parameters": {
+            "eps_ps": float(eps_ps),
+            "eps_ee3": float(eps_ee3),
+            "eta_ps": float(eta_ps),
+            "eta_e3": float(eta_e3),
+            "eta_ee3": float(eta_ee3),
+            "num_average_runs": int(NUM_AVERAGE_RUNS),
+        },
         "algorithms": [ALGO_ID_TO_NAME[int(x)] for x in env.algo_ids],
         "tree_metrics": {
             "isLeaf": env.is_leaf.tolist(),
@@ -838,6 +849,7 @@ def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
             "needExplore": env.need_explore.tolist(),
             "bestPath": int(env.best_leaf),
             "bestPathP": float(env.best_leaf_p),
+            "depth": int(env.depth_value),
         },
         "algorithms_summary": summary_algorithms,
         "files": {
