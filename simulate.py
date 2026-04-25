@@ -516,6 +516,147 @@ def _stable_ps_safe_probs(
 
 
 @njit(cache=True)
+def _compute_child_probabilities(
+    algo_id: int,
+    node: int,
+    start: int,
+    cnt: int,
+    theta: np.ndarray,
+    q: np.ndarray,
+    child_list: np.ndarray,
+    is_safe: np.ndarray,
+    need_explore: np.ndarray,
+    eta_ps: float,
+    eta_e3: float,
+    eta_ee3: float,
+    eps_ps: float,
+    eps_ee3: float,
+    subtree_leaf_start: np.ndarray,
+    subtree_leaf_count: np.ndarray,
+    subtree_leaves: np.ndarray,
+    out_probs: np.ndarray,
+) -> None:
+    if algo_id == 4:  # Random
+        inv = 1.0 / cnt
+        for i in range(cnt):
+            out_probs[i] = inv
+        return
+
+    if algo_id == 5:  # Q-learning
+        chosen_slot = 0
+        best_q = q[child_list[start]]
+        for i in range(1, cnt):
+            cand = child_list[start + i]
+            if q[cand] < best_q - 1e-15:
+                best_q = q[cand]
+                chosen_slot = i
+        for i in range(cnt):
+            out_probs[i] = 0.0
+        out_probs[chosen_slot] = 1.0
+        return
+
+    if algo_id == 1:  # PS
+        if is_safe[node] == 1:
+            _stable_ps_safe_probs(
+                node,
+                start,
+                cnt,
+                child_list,
+                eta_ps,
+                theta,
+                subtree_leaf_start,
+                subtree_leaf_count,
+                subtree_leaves,
+                out_probs,
+            )
+            return
+
+        real_eps = eps_ps if need_explore[node] == 1 else 0.0
+        _softmax_child(theta, child_list, start, cnt, eta_ps, out_probs)
+        for i in range(cnt):
+            out_probs[i] = real_eps / cnt + (1.0 - real_eps) * out_probs[i]
+        return
+
+    if algo_id == 2 or algo_id == 6:  # E3 or E3Q
+        _softmax_child(theta, child_list, start, cnt, eta_e3, out_probs)
+        return
+
+    _softmax_child(theta, child_list, start, cnt, eta_ee3, out_probs)
+    for i in range(cnt):
+        out_probs[i] = eps_ee3 / cnt + (1.0 - eps_ee3) * out_probs[i]
+
+
+@njit(cache=True)
+def _fill_leaf_distribution(
+    algo_id: int,
+    theta: np.ndarray,
+    q: np.ndarray,
+    child_start: np.ndarray,
+    child_count: np.ndarray,
+    child_list: np.ndarray,
+    is_leaf: np.ndarray,
+    is_safe: np.ndarray,
+    need_explore: np.ndarray,
+    eta_ps: float,
+    eta_e3: float,
+    eta_ee3: float,
+    eps_ps: float,
+    eps_ee3: float,
+    subtree_leaf_start: np.ndarray,
+    subtree_leaf_count: np.ndarray,
+    subtree_leaves: np.ndarray,
+    temp_probs: np.ndarray,
+    node_stack: np.ndarray,
+    prob_stack: np.ndarray,
+    out_probs: np.ndarray,
+) -> None:
+    for i in range(out_probs.shape[0]):
+        out_probs[i] = 0.0
+
+    top = 0
+    node_stack[0] = 0
+    prob_stack[0] = 1.0
+
+    while top >= 0:
+        node = int(node_stack[top])
+        prob = float(prob_stack[top])
+        top -= 1
+
+        if is_leaf[node] == 1:
+            out_probs[node] = prob
+            continue
+
+        start = child_start[node]
+        cnt = child_count[node]
+        _compute_child_probabilities(
+            algo_id,
+            node,
+            start,
+            cnt,
+            theta,
+            q,
+            child_list,
+            is_safe,
+            need_explore,
+            eta_ps,
+            eta_e3,
+            eta_ee3,
+            eps_ps,
+            eps_ee3,
+            subtree_leaf_start,
+            subtree_leaf_count,
+            subtree_leaves,
+            temp_probs,
+        )
+
+        for i in range(cnt - 1, -1, -1):
+            top += 1
+            child = child_list[start + i]
+            node_stack[top] = child
+            prob_stack[top] = prob * temp_probs[i]
+
+
+@njit(cache=True)
 def _run_algo_numba(
     algo_id: int,
     seed: int,
@@ -540,15 +681,16 @@ def _run_algo_numba(
     r0: int,
     best_leaf: int,
     best_leaf_p: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    track_leaf_probs: bool,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     np.random.seed(seed)
 
     theta = np.zeros(n, dtype=np.float64)
     q = np.ones(n, dtype=np.float64)
     count_seen = np.zeros(n, dtype=np.int64)
 
-    epsilon_ee3 = max_branching * (rounds ** (-1.0 / (depth_value + 1.0))) if depth_value >= 0 else 0.0
-    epsilon_ps = max_branching * (rounds ** (-1.0 / (r0 + 1.0))) if r0 >= 0 else 0.0
+    eps_ee3 = max_branching * (rounds ** (-1.0 / (depth_value + 1.0))) if depth_value >= 0 else 0.0
+    eps_ps = max_branching * (rounds ** (-1.0 / (r0 + 1.0))) if r0 >= 0 else 0.0
     # NOTE in paper, ps = di * ..., here we use max_branching instead for simplicity
 
     eta_ps = rounds ** (-float(r0) / (r0 + 1.0)) if r0 > 0 else 1.0
@@ -560,15 +702,43 @@ def _run_algo_numba(
     regret = np.zeros(rounds, dtype=np.float64)
     accum = np.zeros(rounds, dtype=np.float64)
     avg = np.zeros(rounds, dtype=np.float64)
+    leaf_probs = np.zeros((rounds, n), dtype=np.float64) if track_leaf_probs else np.zeros((1, 1), dtype=np.float64)
 
     path_nodes = np.empty(n, dtype=np.int64)
     prob_to_node = np.ones(n, dtype=np.float64)
     local_prob = np.ones(n, dtype=np.float64)
     temp_probs = np.empty(max(max_branching, 1), dtype=np.float64)
+    node_stack = np.empty(n, dtype=np.int64)
+    prob_stack = np.empty(n, dtype=np.float64)
 
     cum_reg = 0.0
 
     for t in range(rounds):
+        if track_leaf_probs:
+            _fill_leaf_distribution(
+                algo_id,
+                theta,
+                q,
+                child_start,
+                child_count,
+                child_list,
+                is_leaf,
+                is_safe,
+                need_explore,
+                eta_ps,
+                eta_e3,
+                eta_ee3,
+                eps_ps,
+                eps_ee3,
+                subtree_leaf_start,
+                subtree_leaf_count,
+                subtree_leaves,
+                temp_probs,
+                node_stack,
+                prob_stack,
+                leaf_probs[t],
+            )
+
         node = 0
         depth = 0
         prob_to_node[0] = 1.0
@@ -580,60 +750,32 @@ def _run_algo_numba(
 
             start = child_start[node]
             cnt = child_count[node]
-            chosen_slot = 0
-            chosen_prob = 1.0 / cnt
+            _compute_child_probabilities(
+                algo_id,
+                node,
+                start,
+                cnt,
+                theta,
+                q,
+                child_list,
+                is_safe,
+                need_explore,
+                eta_ps,
+                eta_e3,
+                eta_ee3,
+                eps_ps,
+                eps_ee3,
+                subtree_leaf_start,
+                subtree_leaf_count,
+                subtree_leaves,
+                temp_probs,
+            )
 
-            if algo_id == 4: # Random
-                for i in range(cnt):
-                    temp_probs[i] = 1.0 / cnt
+            if algo_id == 4:  # Random
                 chosen_slot = int(np.random.randint(0, cnt))
-                chosen_prob = temp_probs[chosen_slot]
-
-            elif algo_id == 5: # Q-learning
-                chosen_slot = 0
-                best_q = q[child_list[start]]
-                for i in range(1, cnt):
-                    cand = child_list[start + i]
-                    if q[cand] < best_q - 1e-15:
-                        best_q = q[cand]
-                        chosen_slot = i
-                chosen_prob = 1.0
-
-            elif algo_id == 1: # PS
-                if is_safe[node] == 1:
-                    _stable_ps_safe_probs(
-                        int(node),
-                        start,
-                        cnt,
-                        child_list,
-                        eta_ps,
-                        theta,
-                        subtree_leaf_start,
-                        subtree_leaf_count,
-                        subtree_leaves,
-                        temp_probs,
-                    )
-                    chosen_slot = _sample_discrete(temp_probs, cnt)
-                    chosen_prob = max(temp_probs[chosen_slot], EPS)
-                else:
-                    real_eps = epsilon_ps if need_explore[node] == 1 else 0.0
-                    _softmax_child(theta, child_list, start, cnt, eta_ps, temp_probs)
-                    for i in range(cnt):
-                        temp_probs[i] = real_eps / cnt + (1.0 - real_eps) * temp_probs[i]
-                    chosen_slot = _sample_discrete(temp_probs, cnt)
-                    chosen_prob = max(temp_probs[chosen_slot], EPS)
-
-            elif algo_id == 2 or algo_id == 6: # E3 or E3Q
-                _softmax_child(theta, child_list, start, cnt, eta_e3, temp_probs)
+            else:
                 chosen_slot = _sample_discrete(temp_probs, cnt)
-                chosen_prob = max(temp_probs[chosen_slot], EPS)
-
-            else: # EE3
-                _softmax_child(theta, child_list, start, cnt, eta_ee3, temp_probs)
-                for i in range(cnt):
-                    temp_probs[i] = epsilon_ee3 / cnt + (1.0 - epsilon_ee3) * temp_probs[i]
-                chosen_slot = _sample_discrete(temp_probs, cnt)
-                chosen_prob = max(temp_probs[chosen_slot], EPS)
+            chosen_prob = max(temp_probs[chosen_slot], EPS)
 
             child = child_list[start + chosen_slot]
             prob_to_node[child] = prob_to_node[node] * chosen_prob
@@ -677,7 +819,7 @@ def _run_algo_numba(
                 q[cur] = q[cur] + (c - q[cur]) / count_seen[cur]
                 cur = parent[cur]
 
-    return cost, leaf_used, regret, accum, avg
+    return cost, leaf_used, regret, accum, avg, leaf_probs
 
 
 def _plot_avg_regret(csv_rows: List[Dict[str, int | float | str]], env_name: str, output_path: Path) -> None:
@@ -702,6 +844,28 @@ def _plot_avg_regret(csv_rows: List[Dict[str, int | float | str]], env_name: str
     plt.xlabel("t")
     plt.ylabel("avgRegret[t]")
     plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=160)
+    plt.close()
+
+
+def _plot_leaf_probabilities(
+    leaf_probs: np.ndarray,
+    leaves: np.ndarray,
+    env_name: str,
+    algo_name: str,
+    output_path: Path,
+) -> None:
+    plt.figure(figsize=(11, 6))
+    ts = np.arange(1, leaf_probs.shape[0] + 1, dtype=np.int64)
+    for leaf in leaves:
+        plt.plot(ts, leaf_probs[:, int(leaf)], label=f"leaf {int(leaf)}", linewidth=1.4, alpha=0.9)
+
+    plt.title(f"Leaf selection probability over time ({env_name}, {algo_name})")
+    plt.xlabel("t")
+    plt.ylabel("probability")
+    plt.ylim(0.0, 1.0)
+    plt.legend(fontsize=8, ncol=2)
     plt.tight_layout()
     plt.savefig(output_path, dpi=160)
     plt.close()
@@ -741,7 +905,7 @@ def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
 
         for rep in range(NUM_AVERAGE_RUNS):
             run_seed = base_seed + 1000003 * rep
-            cost, leaf_used, regret, accum, avg = _run_algo_numba(
+            cost, leaf_used, regret, accum, avg, _ = _run_algo_numba(
                 int(algo_id),
                 int(run_seed),
                 int(env.rounds),
@@ -765,6 +929,7 @@ def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
                 int(env.r0),
                 int(env.best_leaf),
                 float(env.best_leaf_p),
+                False,
             )
 
             cost_runs.append(cost)
@@ -866,6 +1031,69 @@ def _simulate_one_env(env: PreparedEnvironment, output_dir: Path) -> None:
     print(f"[{env.env_name}] wrote {plot_path}")
 
 
+def run_env_leaf_prob(env: PreparedEnvironment, output_dir: Path) -> None:
+    rows: List[Dict[str, int | float | str]] = []
+    env_dir = output_dir / env.env_name
+    env_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, algo_id in enumerate(env.algo_ids):
+        algo_name = ALGO_ID_TO_NAME[int(algo_id)]
+        base_seed = env.seed + 10007 * (idx + 1)
+        cost, leaf_used, regret, accum, avg, leaf_probs = _run_algo_numba(
+            int(algo_id),
+            int(base_seed),
+            int(env.rounds),
+            int(env.n),
+            env.parent,
+            env.child_start,
+            env.child_count,
+            env.child_list,
+            env.is_leaf,
+            env.is_safe,
+            env.is_share,
+            env.leaf_prob,
+            env.leaf_distribution,
+            env.leaf_count,
+            env.subtree_leaf_start,
+            env.subtree_leaf_count,
+            env.subtree_leaves,
+            env.need_explore,
+            int(env.depth_value),
+            int(max(env.max_branching, 1)),
+            int(env.r0),
+            int(env.best_leaf),
+            float(env.best_leaf_p),
+            True,
+        )
+
+        best_path_hits = (leaf_used == env.best_leaf).astype(np.float64)
+        share_hits = (env.is_share[leaf_used] == 1).astype(np.float64)
+
+        for t in range(env.rounds):
+            rows.append(
+                {
+                    "env_name": env.env_name,
+                    "algo": algo_name,
+                    "t": t + 1,
+                    "cost": float(cost[t]),
+                    "regret": float(regret[t]),
+                    "accumRegret": float(accum[t]),
+                    "avgRegret": float(avg[t]),
+                    "bestPathRate": float(best_path_hits[t]),
+                    "shareRate": float(share_hits[t]),
+                    "runs": 1,
+                }
+            )
+
+        plot_path = env_dir / f"leaf_prob_{algo_name}.png"
+        _plot_leaf_probabilities(leaf_probs, env.leaves, env.env_name, algo_name, plot_path)
+        print(f"[{env.env_name}] wrote {algo_name} leaf plot: {plot_path}")
+
+    csv_path = env_dir / "dynamic_metrics.csv"
+    _write_csv(rows, csv_path)
+    print(f"[{env.env_name}] wrote {csv_path}")
+
+
 def _load_environments(input_file: Path) -> List[PreparedEnvironment]:
     raw = json.loads(input_file.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
@@ -877,6 +1105,18 @@ def _load_environments(input_file: Path) -> List[PreparedEnvironment]:
             raise ValueError(f"env[{idx}] must be an object")
         envs.append(_prepare_environment(_validate_env_obj(obj, idx)))
     return envs
+
+
+def load_environments(input_file: Path) -> List[PreparedEnvironment]:
+    return _load_environments(input_file)
+
+
+def write_dynamic_csv(rows: List[Dict[str, int | float | str]], output_file: Path) -> None:
+    _write_csv(rows, output_file)
+
+
+def run_env_avg_regret(env: PreparedEnvironment, output_dir: Path) -> None:
+    _simulate_one_env(env, output_dir)
 
 
 def parse_args() -> argparse.Namespace:
