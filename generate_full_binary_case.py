@@ -22,6 +22,12 @@ def parse_args() -> argparse.Namespace:
         help="Probability each non-root node has g=1",
     )
     parser.add_argument(
+        "--algo",
+        type=str,
+        required=True,
+        help="Single algorithm code for this generated case (e.g. PS, E3Q, EE3)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         required=True,
@@ -43,7 +49,7 @@ def parse_args() -> argparse.Namespace:
         "--env-name",
         type=str,
         default=None,
-        help="Environment name (default: fullBinaryTreeS{S}K{K})",
+        help="Environment name (default: fullBinaryTreeS{S}K{K}R{ratio})",
     )
     return parser.parse_args()
 
@@ -57,6 +63,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("rounds must be positive")
     if not (0.0 <= args.ratio <= 1.0):
         raise ValueError("ratio must be in [0, 1]")
+    if not str(args.algo).strip():
+        raise ValueError("algo must not be empty")
 
 
 def full_tree_node_count(s: int, k: int) -> int:
@@ -81,6 +89,7 @@ def generate_case(
     k: int,
     s: int,
     ratio: float,
+    algo: str,
     rounds: int,
     seed: int,
     env_name: str,
@@ -100,7 +109,7 @@ def generate_case(
 
     env = {
         "env_name": env_name,
-        "algo": [],
+        "algo": [algo],
         "seed": seed,
         "node_counts": node_counts,
         "rounds": rounds,
@@ -116,12 +125,13 @@ def main() -> None:
     args = parse_args()
     validate_args(args)
 
-    env_name = args.env_name or f"fullBinaryTreeS{args.S}K{args.K}"
+    env_name = args.env_name or f"fullBinaryTreeS{args.S}K{args.K}R{args.ratio}"
 
     payload = generate_case(
         k=args.K,
         s=args.S,
         ratio=args.ratio,
+        algo=str(args.algo).strip().upper(),
         rounds=args.rounds,
         seed=args.seed,
         env_name=env_name,

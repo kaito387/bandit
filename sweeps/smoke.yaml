@@ -1,0 +1,23 @@
+program: run_tree_shape_sweep.py
+method: grid
+metric:
+  name: algorithms_summary/PS/finalAvgRegret
+  goal: minimize
+parameters:
+  K:
+    value: 3
+  S:
+    value: 2
+  rounds:
+    value: 200000
+  seed:
+    value: 42
+  algo:
+    value: "PS"
+  ratio:
+    values: [0, 0.2, 0.5, 0.8, 1]
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - ${args}

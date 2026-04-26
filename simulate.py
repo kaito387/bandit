@@ -28,16 +28,13 @@ EPS = 1e-12
 NUM_AVERAGE_RUNS = 20
 
 DYNAMIC_TABLE_COLUMNS = [
+    "algo_name",
     "env_name",
-    "algo",
-    "t",
-    "cost",
-    "regret",
-    "accumRegret",
-    "avgRegret",
+    "avgCost",
     "bestPathRate",
     "shareRate",
-    "runs",
+    "finalAvgRegret",
+    "finalAccumRegret",
 ]
 
 ALGO_CODE_TO_ID = {
@@ -740,7 +737,7 @@ def _run_algo_numba(
     cum_reg = 0.0
 
     for t in range(rounds):
-        if (t + 1) % max(1, rounds // 10) == 0:
+        if (t + 1) % max(1, rounds // 5) == 0:
             print(f"Round {t + 1}/{rounds}...")
         if track_leaf_probs:
             _fill_leaf_distribution(
@@ -891,61 +888,22 @@ def _log_avg_regret_plot_streaming(rows_generator_list: List[Tuple], env_name: s
 
 
 def _log_dynamic_table_streaming(rows_generator_list: List[Tuple]) -> None:
-    """Memory-efficient streaming version using downsampling for large datasets."""
+    """Log one final summary row per algorithm."""
     wandb = _require_wandb()
     table = wandb.Table(columns=DYNAMIC_TABLE_COLUMNS)
-    
-    for env_name, algo_name, mean_cost, mean_regret, mean_accum, mean_avg, mean_best_path_rate, mean_share_rate in rows_generator_list:
-        rounds = len(mean_cost)
-        
-        # Downsample: log every Nth point to keep table manageable
-        # For 5M rounds, aim for ~10k points per algorithm
-        downsample_rate = max(1, rounds // 10000)
-        
-        for t in range(0, rounds, downsample_rate):
-            table.add_data(
-                str(env_name),
-                str(algo_name),
-                int(t + 1),
-                float(mean_cost[t]),
-                float(mean_regret[t]),
-                float(mean_accum[t]),
-                float(mean_avg[t]),
-                float(mean_best_path_rate[t]),
-                float(mean_share_rate[t]),
-                int(20),
-            )
+
+    for algo_name, env_name, avg_cost, best_path_rate, share_rate, final_avg_regret, final_accum_regret in rows_generator_list:
+        table.add_data(
+            str(algo_name),
+            str(env_name),
+            float(avg_cost),
+            float(best_path_rate),
+            float(share_rate),
+            float(final_avg_regret),
+            float(final_accum_regret),
+        )
     
     wandb.log({"tables/dynamic_metrics": table})
-
-
-def _log_dynamic_table_leaf_prob(rows_generator_list: List[Tuple]) -> None:
-    """Memory-efficient version for leaf_prob with runs=1, using downsampling."""
-    wandb = _require_wandb()
-    table = wandb.Table(columns=DYNAMIC_TABLE_COLUMNS)
-    
-    for env_name, algo_name, cost, regret, accum, avg, best_path_hits, share_hits, runs in rows_generator_list:
-        rounds = len(cost)
-        
-        # Downsample: log every Nth point to keep table manageable
-        downsample_rate = max(1, rounds // 10000)
-        
-        for t in range(0, rounds, downsample_rate):
-            table.add_data(
-                str(env_name),
-                str(algo_name),
-                int(t + 1),
-                float(cost[t]),
-                float(regret[t]),
-                float(accum[t]),
-                float(avg[t]),
-                float(best_path_hits[t]),
-                float(share_hits[t]),
-                int(runs),
-            )
-    
-    wandb.log({"tables/dynamic_metrics": table})
-
 
 def _log_leaf_probabilities(
     leaf_probs: np.ndarray,
@@ -969,23 +927,6 @@ def _log_leaf_probabilities(
     plt.close()
 
 
-def _log_dynamic_table(rows: List[Dict[str, int | float | str]]) -> None:
-    wandb = _require_wandb()
-    table = wandb.Table(columns=DYNAMIC_TABLE_COLUMNS)
-    for row in rows:
-        table.add_data(
-            str(row["env_name"]),
-            str(row["algo"]),
-            int(row["t"]),
-            float(row["cost"]),
-            float(row["regret"]),
-            float(row["accumRegret"]),
-            float(row["avgRegret"]),
-            float(row["bestPathRate"]),
-            float(row["shareRate"]),
-            int(row["runs"]),
-        )
-    wandb.log({"tables/dynamic_metrics": table})
 
 
 def _log_summary_bars(env_name: str, summary_algorithms: Dict[str, Dict[str, float]]) -> None:
@@ -993,7 +934,7 @@ def _log_summary_bars(env_name: str, summary_algorithms: Dict[str, Dict[str, flo
     metrics = [
         ("avgCost", "avgCost", "avgCost"),
         ("bestPathRate", "bestPathRate", "bestPathRate"),
-        ("finalAccumRegret", "finalAccumRegret", "finalAccumRegret"),
+        ("shareRate", "shareRate", "shareRate"),
         ("finalAvgRegret", "finalAvgRegret", "finalAvgRegret"),
     ]
 
@@ -1030,46 +971,49 @@ def _log_summary_bars(env_name: str, summary_algorithms: Dict[str, Dict[str, flo
 
 def _init_wandb_run(args: argparse.Namespace, env: PreparedEnvironment, job_type: str) -> Any:
     wandb = _require_wandb()
+    testcase_path = getattr(args, "testcase_path", None)
+    sweep_group = getattr(args, "sweep_group", None)
+    run_name = getattr(args, "wandb_name", env.env_name)
+
     config = {
         "env_name": env.env_name,
         "seed": int(env.seed),
-        "node_counts": int(env.n),
         "rounds": int(env.rounds),
         "algorithms": [ALGO_ID_TO_NAME[int(x)] for x in env.algo_ids],
         "num_average_runs": int(NUM_AVERAGE_RUNS),
-        "parents": env.raw_parents,
-        "g": env.raw_g,
-        "p": env.raw_p,
-        "distribution": env.raw_distribution,
-        "raw_algo": env.raw_algo,
+        "testcase_path": str(testcase_path) if testcase_path else None,
+        "sweep_group": str(sweep_group) if sweep_group else None,
     }
     return wandb.init(
-        project=args.wandb_project,
-        entity=args.wandb_entity,
-        group=args.wandb_group,
+        group=sweep_group or args.wandb_group,
         job_type=job_type,
-        name=env.env_name,
+        name=run_name,
         mode=args.wandb_mode,
         config=config,
         reinit="finish_previous",
     )
 
 
+def simulate_single_env(env: PreparedEnvironment, args: argparse.Namespace, job_type: str = "avg_regret") -> None:
+    run = _init_wandb_run(args, env, job_type=job_type)
+    try:
+        _simulate_one_env(env)
+        if getattr(args, "leaf_prob", False):
+            run_env_leaf_prob(env)
+    finally:
+        run.finish()
+
+
 def _log_summary_payload(summary: Dict[str, Any]) -> None:
     wandb = _require_wandb()
 
-    wandb.config.update(
-        {
-            "simulation_parameters": summary["simulation_parameters"],
-            "tree_metrics": summary["tree_metrics"],
-        },
-        allow_val_change=True,
-    )
+    wandb.config.update({"simulation_parameters": summary["simulation_parameters"]}, allow_val_change=True)
 
     wandb.summary["env_name"] = summary["env_name"]
     wandb.summary["runs"] = int(summary["runs"])
     wandb.summary["bestPath"] = int(summary["tree_metrics"]["bestPath"])
     wandb.summary["bestPathP"] = float(summary["tree_metrics"]["bestPathP"])
+    wandb.summary["tree_metrics"] = summary["tree_metrics"]
 
     for algo_name, metrics in summary["algorithms_summary"].items():
         for key, value in metrics.items():
@@ -1085,6 +1029,7 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
     eta_ee3 = env.rounds ** (-float(env.depth_value) / (env.depth_value + 1.0))
 
     rows_generator_list = []
+    final_rows = []
 
     for idx, algo_id in enumerate(env.algo_ids):
         algo_name = ALGO_ID_TO_NAME[int(algo_id)]
@@ -1135,20 +1080,19 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
             share_hits += (env.is_share[leaf_used] == 1).astype(np.float64)
             avg_costs.append(float(np.mean(cost)))
 
-        mean_cost = np.mean(np.stack(cost_runs, axis=0), axis=0)
+        mean_cost = np.mean(np.stack(cost_runs, axis=0), axis=0)                # mean across runs, shape (rounds,)
         mean_regret = np.mean(np.stack(regret_runs, axis=0), axis=0)
         mean_accum = np.mean(np.stack(accum_runs, axis=0), axis=0)
         mean_avg = np.mean(np.stack(avg_runs, axis=0), axis=0)
         mean_best_path_rate = best_path_hits / float(NUM_AVERAGE_RUNS)
         mean_share_rate = share_hits / float(NUM_AVERAGE_RUNS)
 
-        avg_cost = float(np.mean(avg_costs))
+        avg_cost = float(np.mean(avg_costs))                                    # average cost across all runs (single scalar)
         best_path_rate = float(np.mean(mean_best_path_rate))
         share_rate = float(np.mean(mean_share_rate))
 
         summary_algorithms[algo_name] = {
             "avgCost": avg_cost,
-            "bestPath": int(env.best_leaf),
             "bestPathRate": float(best_path_rate),
             "shareRate": float(share_rate),
             "finalAccumRegret": float(mean_accum[-1]),
@@ -1157,8 +1101,19 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
         }
 
         rows_generator_list.append((env.env_name, algo_name, mean_cost, mean_regret, mean_accum, mean_avg, mean_best_path_rate, mean_share_rate))
+        final_rows.append(
+            (
+                algo_name,
+                env.env_name,
+                float(avg_cost),
+                float(best_path_rate),
+                float(share_rate),
+                float(mean_avg[-1]),
+                float(mean_accum[-1]),
+            )
+        )
 
-    _log_dynamic_table_streaming(rows_generator_list)
+    _log_dynamic_table_streaming(final_rows)
     _log_avg_regret_plot_streaming(rows_generator_list, env.env_name)
 
     summary = {
@@ -1177,18 +1132,18 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
         },
         "algorithms": [ALGO_ID_TO_NAME[int(x)] for x in env.algo_ids],
         "tree_metrics": {
-            "isLeaf": env.is_leaf.tolist(),
-            "isSafe": env.is_safe.tolist(),
             "K": int(env.depth_value),
-            "d": env.d.tolist(),
             "S": int(env.max_branching),
-            "leafCount": env.leaf_count.tolist(),
-            "R": env.risk.tolist(),
-            "R0": int(env.r0),
-            "needExplore": env.need_explore.tolist(),
             "bestPath": int(env.best_leaf),
             "bestPathP": float(env.best_leaf_p),
-            "depth": int(env.depth_value),
+            "R0": int(env.r0),
+            "p": env.leaf_prob.tolist(),
+            "d": env.d.tolist(),
+            "isLeaf": env.is_leaf.tolist(),
+            "isSafe": env.is_safe.tolist(),
+            "leafCount": env.leaf_count.tolist(),
+            "R": env.risk.tolist(),
+            "needExplore": env.need_explore.tolist(),
         },
         "algorithms_summary": summary_algorithms,
     }
@@ -1239,10 +1194,6 @@ def run_env_leaf_prob(env: PreparedEnvironment) -> None:
 
         _log_leaf_probabilities(leaf_probs, env.leaves, env.env_name, algo_name)
 
-    _log_dynamic_table_leaf_prob(rows_generator_list)
-    print(f"[{env.env_name}] logged leaf-prob charts and dynamic table to WandB")
-
-
 
 def _load_environments(input_file: Path) -> List[PreparedEnvironment]:
     raw = json.loads(input_file.read_text(encoding="utf-8"))
@@ -1261,23 +1212,16 @@ def load_environments(input_file: Path) -> List[PreparedEnvironment]:
     return _load_environments(input_file)
 
 
-def write_dynamic_csv(rows: List[Dict[str, int | float | str]], output_file: Path) -> None:
-    _ = output_file
-    _log_dynamic_table(rows)
-
-
-def run_env_avg_regret(env: PreparedEnvironment, output_dir: Path) -> None:
-    _ = output_dir
-    _simulate_one_env(env)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Multistage bandit simulator (JSON + Numba)")
+    parser.add_argument("--leaf-prob", action="store_true", help="whether to track and log leaf selection probabilities (can increase runtime and memory)")
+    parser.add_argument("--csv-output", action="store_true", help="whether to write dynamic metrics to CSV file (in addition to WandB)")
     parser.add_argument("--input", required=True, help="path to JSON file (array of environments)")
     parser.add_argument("--output-dir", default="results_json", help="unused; kept for backward compatibility")
-    parser.add_argument("--wandb-project", default="bandit", help="WandB project name")
-    parser.add_argument("--wandb-entity", default="kaito15-sun-yat-sen-university", help="WandB entity/team")
     parser.add_argument("--wandb-group", default="simulation-result", help="optional WandB group")
+    parser.add_argument("--wandb-name", default=None, help="optional WandB run name")
+    parser.add_argument("--sweep-group", default=None, help="optional WandB group override used by sweeps")
+    parser.add_argument("--testcase-path", default=None, help="path of generated testcase for logging")
     parser.add_argument(
         "--wandb-mode",
         default="online",
@@ -1293,12 +1237,7 @@ def main() -> None:
 
     envs = _load_environments(input_file)
     for env in envs:
-        run = _init_wandb_run(args, env, job_type="avg_regret")
-        try:
-            _simulate_one_env(env)
-            run_env_leaf_prob(env)
-        finally:
-            run.finish()
+        simulate_single_env(env, args, job_type="avg_regret")
 
 
 if __name__ == "__main__":
