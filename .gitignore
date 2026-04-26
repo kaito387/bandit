@@ -6,6 +6,8 @@ results*/
 
 .github/prompts/
 
+testcases/
+
 .env
 
 wandb/

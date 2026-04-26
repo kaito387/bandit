@@ -740,6 +740,8 @@ def _run_algo_numba(
     cum_reg = 0.0
 
     for t in range(rounds):
+        if (t + 1) % max(1, rounds // 10) == 0:
+            print(f"Round {t + 1}/{rounds}...")
         if track_leaf_probs:
             _fill_leaf_distribution(
                 algo_id,
@@ -858,34 +860,6 @@ def _require_wandb() -> Any:
     return wandb
 
 
-def _log_avg_regret_plot(csv_rows: List[Dict[str, int | float | str]], env_name: str) -> None:
-    wandb = _require_wandb()
-    algos = sorted({row["algo"] for row in csv_rows})
-    plt.figure(figsize=(10, 6))
-    for algo in algos:
-        filtered = [row for row in csv_rows if row["algo"] == algo]
-        if not filtered:
-            continue
-
-        max_t = max(int(row["t"]) for row in filtered)
-        skip_until = int(max_t * 0.01)  # skip first 1% of data to reduce noise in the plot
-        plot_rows = [row for row in filtered if int(row["t"]) > skip_until]
-        if not plot_rows:
-            plot_rows = filtered
-
-        ts = np.array([int(row["t"]) for row in plot_rows], dtype=np.int64)
-        ys = np.array([float(row["avgRegret"]) for row in plot_rows], dtype=np.float64)
-        plt.plot(ts, ys, label=algo, linewidth=1.5)
-
-    plt.title(f"avgRegret[t] vs t ({env_name})")
-    plt.xlabel("t")
-    plt.ylabel("avgRegret[t]")
-    plt.legend()
-    plt.tight_layout()
-    wandb.log({"charts/avg_regret": wandb.Image(plt.gcf())})
-    plt.close()
-
-
 def _log_avg_regret_plot_streaming(rows_generator_list: List[Tuple], env_name: str) -> None:
     """Memory-efficient version using generators for large datasets."""
     wandb = _require_wandb()
@@ -910,7 +884,7 @@ def _log_avg_regret_plot_streaming(rows_generator_list: List[Tuple], env_name: s
     plt.title(f"avgRegret[t] vs t ({env_name})")
     plt.xlabel("t")
     plt.ylabel("avgRegret[t]")
-    plt.legend()
+    plt.legend(loc="upper right")
     plt.tight_layout()
     wandb.log({"charts/avg_regret": wandb.Image(plt.gcf())})
     plt.close()
@@ -989,7 +963,7 @@ def _log_leaf_probabilities(
     plt.xlabel("t")
     plt.ylabel("probability")
     plt.ylim(0.0, 1.0)
-    plt.legend(fontsize=8, ncol=2)
+    plt.legend(loc="upper right", fontsize=8, ncol=2)
     plt.tight_layout()
     wandb.log({f"charts/leaf_prob_{algo_name}": wandb.Image(plt.gcf())})
     plt.close()
@@ -1077,7 +1051,7 @@ def _init_wandb_run(args: argparse.Namespace, env: PreparedEnvironment, job_type
         name=env.env_name,
         mode=args.wandb_mode,
         config=config,
-        reinit=True,
+        reinit="finish_previous",
     )
 
 
@@ -1125,6 +1099,7 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
 
         for rep in range(NUM_AVERAGE_RUNS):
             run_seed = base_seed + 1000003 * rep
+            print(f"Running {algo_name} on {env.env_name}, run {rep + 1}/{NUM_AVERAGE_RUNS} with seed {run_seed}")
             cost, leaf_used, regret, accum, avg, _ = _run_algo_numba(
                 int(algo_id),
                 int(run_seed),
@@ -1223,8 +1198,7 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
     print(f"[{env.env_name}] logged avg-regret chart, dynamic table, summary, and summary-bars to WandB")
 
 
-def run_env_leaf_prob(env: PreparedEnvironment, output_dir: Path) -> None:
-    _ = output_dir  # kept for backward-compatible API shape
+def run_env_leaf_prob(env: PreparedEnvironment) -> None:
 
     rows_generator_list = []
 
@@ -1303,7 +1277,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="results_json", help="unused; kept for backward compatibility")
     parser.add_argument("--wandb-project", default="bandit", help="WandB project name")
     parser.add_argument("--wandb-entity", default="kaito15-sun-yat-sen-university", help="WandB entity/team")
-    parser.add_argument("--wandb-group", default=None, help="optional WandB group")
+    parser.add_argument("--wandb-group", default="simulation-result", help="optional WandB group")
     parser.add_argument(
         "--wandb-mode",
         default="online",
@@ -1322,6 +1296,7 @@ def main() -> None:
         run = _init_wandb_run(args, env, job_type="avg_regret")
         try:
             _simulate_one_env(env)
+            run_env_leaf_prob(env)
         finally:
             run.finish()
 
