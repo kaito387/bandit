@@ -886,6 +886,93 @@ def _log_avg_regret_plot(csv_rows: List[Dict[str, int | float | str]], env_name:
     plt.close()
 
 
+def _log_avg_regret_plot_streaming(rows_generator_list: List[Tuple], env_name: str) -> None:
+    """Memory-efficient version using generators for large datasets."""
+    wandb = _require_wandb()
+    algos = sorted({row[1] for row in rows_generator_list})
+    plt.figure(figsize=(10, 6))
+    
+    for algo in algos:
+        for env_name_g, algo_name, mean_cost, mean_regret, mean_accum, mean_avg, mean_best_path_rate, mean_share_rate in rows_generator_list:
+            if algo_name != algo:
+                continue
+            
+            rounds = len(mean_avg)
+            max_t = rounds
+            skip_until = int(max_t * 0.01)
+            
+            ts = np.arange(skip_until + 1, rounds + 1, dtype=np.int64)
+            ys = mean_avg[skip_until:]
+            
+            if len(ts) > 0 and len(ys) > 0:
+                plt.plot(ts, ys, label=algo, linewidth=1.5)
+    
+    plt.title(f"avgRegret[t] vs t ({env_name})")
+    plt.xlabel("t")
+    plt.ylabel("avgRegret[t]")
+    plt.legend()
+    plt.tight_layout()
+    wandb.log({"charts/avg_regret": wandb.Image(plt.gcf())})
+    plt.close()
+
+
+def _log_dynamic_table_streaming(rows_generator_list: List[Tuple]) -> None:
+    """Memory-efficient streaming version using downsampling for large datasets."""
+    wandb = _require_wandb()
+    table = wandb.Table(columns=DYNAMIC_TABLE_COLUMNS)
+    
+    for env_name, algo_name, mean_cost, mean_regret, mean_accum, mean_avg, mean_best_path_rate, mean_share_rate in rows_generator_list:
+        rounds = len(mean_cost)
+        
+        # Downsample: log every Nth point to keep table manageable
+        # For 5M rounds, aim for ~10k points per algorithm
+        downsample_rate = max(1, rounds // 10000)
+        
+        for t in range(0, rounds, downsample_rate):
+            table.add_data(
+                str(env_name),
+                str(algo_name),
+                int(t + 1),
+                float(mean_cost[t]),
+                float(mean_regret[t]),
+                float(mean_accum[t]),
+                float(mean_avg[t]),
+                float(mean_best_path_rate[t]),
+                float(mean_share_rate[t]),
+                int(20),
+            )
+    
+    wandb.log({"tables/dynamic_metrics": table})
+
+
+def _log_dynamic_table_leaf_prob(rows_generator_list: List[Tuple]) -> None:
+    """Memory-efficient version for leaf_prob with runs=1, using downsampling."""
+    wandb = _require_wandb()
+    table = wandb.Table(columns=DYNAMIC_TABLE_COLUMNS)
+    
+    for env_name, algo_name, cost, regret, accum, avg, best_path_hits, share_hits, runs in rows_generator_list:
+        rounds = len(cost)
+        
+        # Downsample: log every Nth point to keep table manageable
+        downsample_rate = max(1, rounds // 10000)
+        
+        for t in range(0, rounds, downsample_rate):
+            table.add_data(
+                str(env_name),
+                str(algo_name),
+                int(t + 1),
+                float(cost[t]),
+                float(regret[t]),
+                float(accum[t]),
+                float(avg[t]),
+                float(best_path_hits[t]),
+                float(share_hits[t]),
+                int(runs),
+            )
+    
+    wandb.log({"tables/dynamic_metrics": table})
+
+
 def _log_leaf_probabilities(
     leaf_probs: np.ndarray,
     leaves: np.ndarray,
@@ -1016,13 +1103,14 @@ def _log_summary_payload(summary: Dict[str, Any]) -> None:
 
 
 def _simulate_one_env(env: PreparedEnvironment) -> None:
-    rows: List[Dict[str, int | float | str]] = []
     summary_algorithms: Dict[str, Dict[str, float]] = {}
     eps_ee3 = env.max_branching * (env.rounds ** (-1.0 / (env.depth_value + 1.0)))
     eps_ps = env.max_branching * (env.rounds ** (-1.0 / (env.r0 + 1.0)))
     eta_ps = env.rounds ** (-float(env.r0) / (env.r0 + 1.0)) if env.r0 > 0 else 1.0
     eta_e3 = math.sqrt(math.log(max(int(env.max_branching), 2)) / (env.rounds * max(int(env.max_branching), 1)))
     eta_ee3 = env.rounds ** (-float(env.depth_value) / (env.depth_value + 1.0))
+
+    rows_generator_list = []
 
     for idx, algo_id in enumerate(env.algo_ids):
         algo_name = ALGO_ID_TO_NAME[int(algo_id)]
@@ -1093,24 +1181,10 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
             "runs": int(NUM_AVERAGE_RUNS),
         }
 
-        for t in range(env.rounds):
-            rows.append(
-                {
-                    "env_name": env.env_name,
-                    "algo": algo_name,
-                    "t": t + 1,
-                    "cost": float(mean_cost[t]),
-                    "regret": float(mean_regret[t]),
-                    "accumRegret": float(mean_accum[t]),
-                    "avgRegret": float(mean_avg[t]),
-                    "bestPathRate": float(mean_best_path_rate[t]),
-                    "shareRate": float(mean_share_rate[t]),
-                    "runs": int(NUM_AVERAGE_RUNS),
-                }
-            )
+        rows_generator_list.append((env.env_name, algo_name, mean_cost, mean_regret, mean_accum, mean_avg, mean_best_path_rate, mean_share_rate))
 
-    _log_dynamic_table(rows)
-    _log_avg_regret_plot(rows, env.env_name)
+    _log_dynamic_table_streaming(rows_generator_list)
+    _log_avg_regret_plot_streaming(rows_generator_list, env.env_name)
 
     summary = {
         "env_name": env.env_name,
@@ -1151,7 +1225,8 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
 
 def run_env_leaf_prob(env: PreparedEnvironment, output_dir: Path) -> None:
     _ = output_dir  # kept for backward-compatible API shape
-    rows: List[Dict[str, int | float | str]] = []
+
+    rows_generator_list = []
 
     for idx, algo_id in enumerate(env.algo_ids):
         algo_name = ALGO_ID_TO_NAME[int(algo_id)]
@@ -1186,26 +1261,13 @@ def run_env_leaf_prob(env: PreparedEnvironment, output_dir: Path) -> None:
         best_path_hits = (leaf_used == env.best_leaf).astype(np.float64)
         share_hits = (env.is_share[leaf_used] == 1).astype(np.float64)
 
-        for t in range(env.rounds):
-            rows.append(
-                {
-                    "env_name": env.env_name,
-                    "algo": algo_name,
-                    "t": t + 1,
-                    "cost": float(cost[t]),
-                    "regret": float(regret[t]),
-                    "accumRegret": float(accum[t]),
-                    "avgRegret": float(avg[t]),
-                    "bestPathRate": float(best_path_hits[t]),
-                    "shareRate": float(share_hits[t]),
-                    "runs": 1,
-                }
-            )
+        rows_generator_list.append((env.env_name, algo_name, cost, regret, accum, avg, best_path_hits, share_hits, 1))
 
         _log_leaf_probabilities(leaf_probs, env.leaves, env.env_name, algo_name)
 
-    _log_dynamic_table(rows)
+    _log_dynamic_table_leaf_prob(rows_generator_list)
     print(f"[{env.env_name}] logged leaf-prob charts and dynamic table to WandB")
+
 
 
 def _load_environments(input_file: Path) -> List[PreparedEnvironment]:
