@@ -78,6 +78,7 @@ class EnvironmentInput:
     g: List[int]
     p: List[float]
     distribution: Dict[int, int]
+    distribution_raw: Dict[str, str] = None  # Original string format from JSON
 
 
 @dataclass
@@ -110,6 +111,12 @@ class PreparedEnvironment:
     leaves: np.ndarray
     best_leaf: int
     best_leaf_p: float
+    # Original configuration from JSON for reference
+    raw_parents: List[int]
+    raw_g: List[int]
+    raw_p: List[float]
+    raw_distribution: Dict[str, str]
+    raw_algo: List[str]
 
 
 def _build_tree_arrays(n: int, parents: List[int]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -263,6 +270,7 @@ def _validate_env_obj(obj: dict, index: int) -> EnvironmentInput:
         g=g,
         p=p,
         distribution=distribution,
+        distribution_raw={key: str(value) for key, value in distribution_raw.items()},
     )
 
 
@@ -413,6 +421,11 @@ def _prepare_environment(raw: EnvironmentInput) -> PreparedEnvironment:
         leaves=leaves,
         best_leaf=best_leaf,
         best_leaf_p=best_p,
+        raw_parents=raw.parents,
+        raw_g=raw.g,
+        raw_p=raw.p,
+        raw_distribution=raw.distribution_raw or {},
+        raw_algo=raw.algo,
     )
 
 
@@ -963,6 +976,11 @@ def _init_wandb_run(args: argparse.Namespace, env: PreparedEnvironment, job_type
         "rounds": int(env.rounds),
         "algorithms": [ALGO_ID_TO_NAME[int(x)] for x in env.algo_ids],
         "num_average_runs": int(NUM_AVERAGE_RUNS),
+        "parents": env.raw_parents,
+        "g": env.raw_g,
+        "p": env.raw_p,
+        "distribution": env.raw_distribution,
+        "raw_algo": env.raw_algo,
     }
     return wandb.init(
         project=args.wandb_project,
