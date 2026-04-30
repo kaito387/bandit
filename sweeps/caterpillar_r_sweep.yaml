@@ -1,21 +1,21 @@
 program: run_tree_shape_sweep.py
 method: grid
 metric:
-  name: algorithms_summary/PS/finalAvgRegret
+  name: algorithms_summary/finalAvgRegret
   goal: minimize
 parameters:
+  tree-shape:
+    value: "caterpillar"
   K:
-    value: 4
-  S:
-    value: 4
+    value: 8
   rounds:
-    value: 2000000
+    value: 5000000
   seed:
     value: 42
   algo:
-    values: ["PS","E3","E3Q","EE3","R","Q"]
-  ratio:
-    values: [0, 0.2, 0.5, 0.8, 1]
+    values: ["PS", "EE3"]
+  R:
+    values: [8, 6, 4, 2]
 command:
   - ${env}
   - ${interpreter}

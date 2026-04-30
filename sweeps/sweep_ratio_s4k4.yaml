@@ -4,12 +4,14 @@ metric:
   name: algorithms_summary/PS/finalAvgRegret
   goal: minimize
 parameters:
+  tree-shape:
+    value: "full-binary"
   K:
-    value: 3
+    value: 4
   S:
-    value: 2
+    value: 4
   rounds:
-    value: 200000
+    value: 5000000
   seed:
     value: 42
   algo:
@@ -20,5 +22,4 @@ command:
   - ${env}
   - ${interpreter}
   - ${program}
-  - --tree-shape=full-binary
   - ${args}

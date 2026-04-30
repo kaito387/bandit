@@ -485,8 +485,6 @@ def _logsumexp_subtree(
 ) -> float:
     start = subtree_leaf_start[node]
     cnt = subtree_leaf_count[node]
-    if cnt <= 0:
-        return -1.0e300
 
     first_leaf = subtree_leaves[start]
     max_theta = eta * float(theta[int(first_leaf)])
@@ -1017,7 +1015,7 @@ def _log_summary_payload(summary: Dict[str, Any]) -> None:
 
     for algo_name, metrics in summary["algorithms_summary"].items():
         for key, value in metrics.items():
-            wandb.summary[f"algorithms_summary/{algo_name}/{key}"] = value
+            wandb.summary[f"algorithms_summary/{key}"] = value
 
 
 def _simulate_one_env(env: PreparedEnvironment) -> None:
