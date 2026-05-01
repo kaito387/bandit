@@ -217,6 +217,36 @@ def assign_g_values_caterpillar(tree: TreeStructure, r: int) -> List[int]:
     return g
 
 
+def assign_g_values_mix_caterpillar(
+    tree: TreeStructure, ratio: float, rng: random.Random
+) -> List[int]:
+    """Assign g values for mixcaterpillar tree.
+
+    Strategy:
+    - Each non-root node independently samples g=1 with probability `ratio`.
+    - Otherwise g=0.
+
+    Args:
+        tree: TreeStructure from CaterpillarTreeBuilder.
+        ratio: Probability of g=1 for each non-root node, in [0, 1].
+        rng: Random number generator.
+
+    Returns:
+        g array (length = node_counts - 1).
+    """
+    if ratio < 0.0 or ratio > 1.0:
+        raise ValueError("ratio must be in [0, 1]")
+
+    node_counts = tree.node_counts
+    g = [0] * (node_counts - 1)
+
+    for node in range(1, node_counts):
+        if rng.random() < ratio:
+            g[node - 1] = 1
+
+    return g
+
+
 def assign_p_values_full_binary(tree: TreeStructure, rng: random.Random) -> List[float]:
     """Assign p values for full binary tree leaves.
 

@@ -14,7 +14,7 @@ Optional: add `--wandb-mode offline` for local/offline logging.
 
 ## Tree Shape Generation
 
-Two tree shapes are supported: **full-binary** and **caterpillar**.
+Three tree shapes are supported: **full-binary**, **caterpillar**, and **mixcaterpillar**.
 
 ### Full Binary Tree
 
@@ -63,6 +63,25 @@ python generate_full_binary_case.py \
   --output testcases/generated/caterpillarS2K2R0.json
 ```
 
+### Mix Caterpillar Tree
+
+This shape keeps the caterpillar topology, but samples `g` per node.
+
+**Parametrization:**
+- `--ratio`: Each non-root node independently has `g=1` with probability `ratio`.
+- Leaves sample `p` from depth-dependent intervals: deeper leaves sample from higher values in [0.2, 0.8].
+- The deepest leaf (last in the leaves list) is marked `p=0.05` and `distribution=TIMEVARIANT`.
+
+**Example: generate a mixcaterpillar tree (K=2, ratio=0.5)**
+
+```bash
+python generate_full_binary_case.py \
+  --tree-shape mixcaterpillar \
+  --K 2 --mix-ratio 0.5 \
+  --algo PS --rounds 100000 --seed 42 \
+  --output testcases/generated/mixcaterpillarS2K2Ratio0.5.json
+```
+
 ## Tree Shape Sweep (K/S fixed, ratio sweep)
 
 You can now sweep tree shape by fixing `K`, `S`, and `rounds`, then scanning `ratio`.
@@ -105,6 +124,14 @@ python run_tree_shape_sweep.py \
 python run_tree_shape_sweep.py \
   --tree-shape caterpillar \
   --K 3 --R 1 \
+  --algo PS --rounds 100000
+```
+
+**Mixcaterpillar sweep:**
+```bash
+python run_tree_shape_sweep.py \
+  --tree-shape mixcaterpillar \
+  --K 3 --ratio 0.5 \
   --algo PS --rounds 100000
 ```
 

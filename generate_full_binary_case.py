@@ -13,14 +13,14 @@ import tree_builders
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate a tree testcase JSON (full binary tree or caterpillar)."
+        description="Generate a tree testcase JSON (full binary tree, caterpillar, or mixcaterpillar)."
     )
     parser.add_argument(
         "--tree-shape",
         type=str,
-        choices=["full-binary", "caterpillar"],
+        choices=["full-binary", "caterpillar", "mixcaterpillar"],
         default="full-binary",
-        help="Tree shape: 'full-binary' or 'caterpillar' (default: full-binary)",
+        help="Tree shape: 'full-binary', 'caterpillar', or 'mixcaterpillar' (default: full-binary)",
     )
 
     # Common parameters
@@ -73,6 +73,14 @@ def parse_args() -> argparse.Namespace:
         help="[caterpillar] First R layers have g=0 (default: 0)",
     )
 
+    # Mixcaterpillar specific
+    parser.add_argument(
+        "--mix-ratio",
+        type=float,
+        default=None,
+        help="[mixcaterpillar] Probability of g=1 for each non-root node (in [0, 1])",
+    )
+
     return parser.parse_args()
 
 
@@ -96,6 +104,11 @@ def validate_args(args: argparse.Namespace) -> None:
     elif args.tree_shape == "caterpillar":
         if args.R < 0 or args.R > args.K:
             raise ValueError(f"R must be in [0, K] (K={args.K})")
+    elif args.tree_shape == "mixcaterpillar":
+        if args.mix_ratio is None:
+            raise ValueError("--mix-ratio is required for mixcaterpillar tree")
+        if not (0.0 <= args.mix_ratio <= 1.0):
+            raise ValueError("mix-ratio must be in [0, 1]")
 
 
 def generate_case_full_binary(
@@ -179,6 +192,48 @@ def generate_case_caterpillar(
     return [env]
 
 
+def _ratio_tag(value: float) -> str:
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text if text else "0"
+
+
+def generate_case_mix_caterpillar(
+    k: int,
+    mix_ratio: float,
+    algo: str,
+    rounds: int,
+    seed: int,
+    env_name: str,
+) -> list[dict]:
+    """Generate mixcaterpillar tree case."""
+    rng = random.Random(seed)
+
+    builder = tree_builders.CaterpillarTreeBuilder(k=k)
+    tree = builder.build()
+
+    g = tree_builders.assign_g_values_mix_caterpillar(tree, ratio=mix_ratio, rng=rng)
+    p = tree_builders.assign_p_values_caterpillar(tree, rng=rng)
+
+    rng_for_special = random.Random(seed + 1)
+    special_leaf = tree_builders.select_random_leaf(tree.leaves, rng_for_special)
+    special_leaf_idx = tree.leaves.index(special_leaf)
+    p[special_leaf - 1] = 0.05
+    distribution = tree_builders.assign_distribution(tree, special_leaf_idx, rng=rng)
+
+    env = {
+        "env_name": env_name,
+        "algo": [algo],
+        "seed": seed,
+        "node_counts": tree.node_counts,
+        "rounds": rounds,
+        "parents": tree.parents,
+        "g": g,
+        "p": p,
+        "distribution": distribution,
+    }
+    return [env]
+
+
 def generate_case(
     k: int,
     s: int,
@@ -206,6 +261,9 @@ def main() -> None:
 
     algo_code = str(args.algo).strip().upper()
 
+    random.seed()
+    args.seed += random.randint(0, 1000)  # avoid same tree structure when sweeping multiple cases with same seed
+
     if args.tree_shape == "full-binary":
         env_name = args.env_name or f"fullBinaryTreeS{args.S}K{args.K}R{args.ratio}"
         payload = generate_case_full_binary(
@@ -222,6 +280,16 @@ def main() -> None:
         payload = generate_case_caterpillar(
             k=args.K,
             r=args.R,
+            algo=algo_code,
+            rounds=args.rounds,
+            seed=args.seed,
+            env_name=env_name,
+        )
+    elif args.tree_shape == "mixcaterpillar":
+        env_name = args.env_name or f"mixcaterpillarS2K{args.K}Ratio{_ratio_tag(args.mix_ratio)}"
+        payload = generate_case_mix_caterpillar(
+            k=args.K,
+            mix_ratio=args.mix_ratio,
             algo=algo_code,
             rounds=args.rounds,
             seed=args.seed,

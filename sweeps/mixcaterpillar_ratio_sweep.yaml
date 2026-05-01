@@ -1,0 +1,23 @@
+program: run_tree_shape_sweep.py
+method: grid
+metric:
+  name: algorithms_summary/finalAvgRegret
+  goal: minimize
+parameters:
+  tree-shape:
+    value: "mixcaterpillar"
+  K:
+    value: 6
+  rounds:
+    value: 5000000
+  seed:
+    value: 42
+  algo:
+    value: "PS"
+  ratio:
+    values: [0, 0.2, 0.4, 0.6, 0.8, 0.85, 0.9, 0.95, 0.97, 1]
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - ${args}

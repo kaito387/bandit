@@ -62,6 +62,19 @@ def _write_generated_case(
             seed=seed,
             env_name=env_name,
         )
+    elif tree_shape == "mixcaterpillar":
+        if ratio is None:
+            raise ValueError("--ratio required for mixcaterpillar")
+        ratio_tag = _ratio_tag(ratio)
+        env_name = f"mixcaterpillarS2K{k}Ratio{ratio_tag}"
+        payload = generate_full_binary_case.generate_case_mix_caterpillar(
+            k=k,
+            mix_ratio=ratio,
+            algo=algo,
+            rounds=rounds,
+            seed=seed,
+            env_name=env_name,
+        )
     else:
         raise ValueError(f"unknown tree-shape: {tree_shape}")
 
@@ -113,7 +126,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tree-shape",
         type=str,
-        choices=["full-binary", "caterpillar"],
+        choices=["full-binary", "caterpillar", "mixcaterpillar"],
         default="full-binary",
         help="Tree shape (default: full-binary)",
     )
@@ -121,13 +134,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=2_000_000, help="simulation rounds")
     parser.add_argument("--seed", type=int, default=42, help="random seed for testcase generation")
 
-    # Full-binary specific
+    # Full-binary / mixcaterpillar specific
     parser.add_argument("--S", type=int, default=None, help="[full-binary] branching factor")
     parser.add_argument(
         "--ratio",
         type=float,
         default=None,
-        help="[full-binary] fraction of leaves with g=1 (in [0, 1])",
+        help="[full-binary] fraction of leaves with g=1, [mixcaterpillar] probability each non-root node has g=1",
     )
 
     # Caterpillar specific
@@ -168,6 +181,11 @@ def main() -> None:
     elif args.tree_shape == "caterpillar":
         if args.R < 0 or args.R > args.K:
             raise ValueError(f"R must be in [0, K] (K={args.K})")
+    elif args.tree_shape == "mixcaterpillar":
+        if args.ratio is None:
+            raise ValueError("--ratio is required for mixcaterpillar")
+        if args.ratio < 0.0 or args.ratio > 1.0:
+            raise ValueError("--ratio must be in [0, 1]")
 
     _run_one_trial(args)
 

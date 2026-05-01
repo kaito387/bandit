@@ -14,6 +14,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+import random
 from typing import Any, Dict, List, Tuple
 
 import matplotlib
@@ -973,6 +974,8 @@ def _init_wandb_run(args: argparse.Namespace, env: PreparedEnvironment, job_type
     sweep_group = getattr(args, "sweep_group", None)
     run_name = getattr(args, "wandb_name", env.env_name)
 
+    print(f"run name: {run_name}")
+
     config = {
         "env_name": env.env_name,
         "seed": int(env.seed),
@@ -1013,9 +1016,18 @@ def _log_summary_payload(summary: Dict[str, Any]) -> None:
     wandb.summary["bestPathP"] = float(summary["tree_metrics"]["bestPathP"])
     wandb.summary["tree_metrics"] = summary["tree_metrics"]
 
-    for algo_name, metrics in summary["algorithms_summary"].items():
-        for key, value in metrics.items():
+    # if only one algorithm was run, log algorithms_summary/key = value
+    # else, log algorithms_summary/algo_name/key = value for each algo and key
+    algo_summary = summary["algorithms_summary"]
+
+    if len(summary["algorithms"]) == 1:
+        algo_name = summary["algorithms"][0]
+        for key, value in algo_summary[algo_name].items():
             wandb.summary[f"algorithms_summary/{key}"] = value
+    else:
+        for algo_name in summary["algorithms"]:
+            for key, value in algo_summary[algo_name].items():
+                wandb.summary[f"algorithms_summary/{algo_name}/{key}"] = value
 
 
 def _simulate_one_env(env: PreparedEnvironment) -> None:
