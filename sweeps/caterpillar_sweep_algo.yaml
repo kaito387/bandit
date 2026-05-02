@@ -5,20 +5,19 @@ metric:
   goal: minimize
 parameters:
   tree-shape:
-    value: "mixcaterpillar"
+    value: "caterpillar"
   K:
-    value: 6
+    value: 8
   rounds:
     value: 5000000
   seed:
     value: 42
   algo:
-    value: "PS"
-  ratio:
-    values: [0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.92, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99, 1]
+    values: ["PS", "EE3", "Q", "R", "E3", "E3Q"]
+  R:
+    value: 4
 command:
   - ${env}
   - ${interpreter}
   - ${program}
-  - --regen-tree-each-run
   - ${args}

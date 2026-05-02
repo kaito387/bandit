@@ -1,7 +1,7 @@
 program: run_tree_shape_sweep.py
 method: grid
 metric:
-  name: algorithms_summary/PS/finalAvgRegret
+  name: algorithms_summary/finalAvgRegret
   goal: minimize
 parameters:
   tree-shape:
@@ -17,7 +17,7 @@ parameters:
   algo:
     value: "PS"
   ratio:
-    values: [0, 0.2, 0.5, 0.8, 1]
+    values: [0, 0.25, 0.5, 0.75, 1]
 command:
   - ${env}
   - ${interpreter}

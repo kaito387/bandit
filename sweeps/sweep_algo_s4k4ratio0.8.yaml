@@ -15,7 +15,7 @@ parameters:
   seed:
     value: 42
   algo:
-    values: ["PS", "E3", "E3Q", "EE3", "R", "Q"]
+    values: ["E3", "E3Q", "EE3", "R", "Q"]
   ratio:
     value: 0.8
 command:

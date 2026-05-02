@@ -20,13 +20,15 @@ from typing import Any, Dict, List, Tuple
 import matplotlib
 import numpy as np
 from numba import njit
+import generate_full_binary_case
+import tree_builders
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
 EPS = 1e-12
-NUM_AVERAGE_RUNS = 20
+NUM_AVERAGE_RUNS = 50
 
 DYNAMIC_TABLE_COLUMNS = [
     "algo_name",
@@ -77,6 +79,8 @@ class EnvironmentInput:
     p: List[float]
     distribution: Dict[int, int]
     distribution_raw: Dict[str, str] = None  # Original string format from JSON
+    tree_shape: str = None
+    tree_params: Dict[str, Any] = None
 
 
 @dataclass
@@ -115,6 +119,8 @@ class PreparedEnvironment:
     raw_p: List[float]
     raw_distribution: Dict[str, str]
     raw_algo: List[str]
+    raw_tree_shape: str
+    raw_tree_params: Dict[str, Any]
 
 
 def _build_tree_arrays(n: int, parents: List[int]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -193,6 +199,8 @@ def _validate_env_obj(obj: dict, index: int) -> EnvironmentInput:
     g = [int(x) for x in obj["g"]]
     p = [float(x) for x in obj["p"]]
     distribution_raw = obj.get("distribution", {})
+    tree_shape = obj.get("tree_shape")
+    tree_params_raw = obj.get("tree_params", {})
 
     if node_counts <= 0:
         raise ValueError(f"env[{index}] node_counts must be positive")
@@ -232,6 +240,14 @@ def _validate_env_obj(obj: dict, index: int) -> EnvironmentInput:
     if not isinstance(distribution_raw, dict):
         raise ValueError(f"env[{index}] distribution must be an object")
 
+    if tree_shape is not None:
+        tree_shape = str(tree_shape).strip()
+        if tree_shape not in {"full-binary", "caterpillar", "mixcaterpillar"}:
+            raise ValueError(f"env[{index}] unknown tree_shape: {tree_shape}")
+
+    if not isinstance(tree_params_raw, dict):
+        raise ValueError(f"env[{index}] tree_params must be an object")
+
     distribution: Dict[int, int] = {}
     for key, value in distribution_raw.items():
         try:
@@ -269,6 +285,8 @@ def _validate_env_obj(obj: dict, index: int) -> EnvironmentInput:
         p=p,
         distribution=distribution,
         distribution_raw={key: str(value) for key, value in distribution_raw.items()},
+        tree_shape=tree_shape,
+        tree_params=dict(tree_params_raw),
     )
 
 
@@ -424,6 +442,8 @@ def _prepare_environment(raw: EnvironmentInput) -> PreparedEnvironment:
         raw_p=raw.p,
         raw_distribution=raw.distribution_raw or {},
         raw_algo=raw.algo,
+        raw_tree_shape=raw.tree_shape,
+        raw_tree_params=raw.tree_params or {},
     )
 
 
@@ -627,21 +647,6 @@ def _compute_child_probabilities(
         return
 
     if algo_id == 1:  # PS
-        if is_safe[node] == 1:
-            _stable_ps_safe_probs(
-                node,
-                start,
-                cnt,
-                child_list,
-                eta_ps,
-                theta,
-                subtree_leaf_start,
-                subtree_leaf_count,
-                subtree_leaves,
-                out_probs,
-            )
-            return
-
         real_eps = eps_ps if need_explore[node] == 1 else 0.0
         _softmax_child(theta, child_list, start, cnt, eta_ps, out_probs)
         for i in range(cnt):
@@ -1061,7 +1066,7 @@ def _init_wandb_run(args: argparse.Namespace, env: PreparedEnvironment, job_type
 def simulate_single_env(env: PreparedEnvironment, args: argparse.Namespace, job_type: str = "avg_regret") -> None:
     run = _init_wandb_run(args, env, job_type=job_type)
     try:
-        _simulate_one_env(env)
+        _simulate_one_env(env, args)
         if getattr(args, "leaf_prob", False):
             run_env_leaf_prob(env)
     finally:
@@ -1093,7 +1098,50 @@ def _log_summary_payload(summary: Dict[str, Any]) -> None:
                 wandb.summary[f"algorithms_summary/{algo_name}/{key}"] = value
 
 
-def _simulate_one_env(env: PreparedEnvironment) -> None:
+def _generate_prepared_env_from_template(env: PreparedEnvironment, rep_seed: int, rep_idx: int) -> PreparedEnvironment:
+    if not env.raw_tree_shape:
+        raise ValueError(
+            f"env {env.env_name} is missing tree metadata; regenerate testcases with tree_shape/tree_params"
+        )
+
+    tree_shape = str(env.raw_tree_shape)
+    tree_params = env.raw_tree_params or {}
+
+    if tree_shape == "full-binary":
+        payload = generate_full_binary_case.generate_case_full_binary(
+            k=int(tree_params["K"]),
+            s=int(tree_params["S"]),
+            ratio=float(tree_params["ratio"]),
+            algo=env.raw_algo[0],
+            rounds=int(env.rounds),
+            seed=int(rep_seed),
+            env_name=f"{env.env_name}_rep{rep_idx}",
+        )
+    elif tree_shape == "caterpillar":
+        payload = generate_full_binary_case.generate_case_caterpillar(
+            k=int(tree_params["K"]),
+            r=int(tree_params["R"]),
+            algo=env.raw_algo[0],
+            rounds=int(env.rounds),
+            seed=int(rep_seed),
+            env_name=f"{env.env_name}_rep{rep_idx}",
+        )
+    elif tree_shape == "mixcaterpillar":
+        payload = generate_full_binary_case.generate_case_mix_caterpillar(
+            k=int(tree_params["K"]),
+            mix_ratio=float(tree_params["mix_ratio"]),
+            algo=env.raw_algo[0],
+            rounds=int(env.rounds),
+            seed=int(rep_seed),
+            env_name=f"{env.env_name}_rep{rep_idx}",
+        )
+    else:
+        raise ValueError(f"env {env.env_name} has unsupported tree shape: {tree_shape}")
+    raw = _validate_env_obj(payload[0], 0)
+    return _prepare_environment(raw)
+
+
+def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> None:
     summary_algorithms: Dict[str, Dict[str, float]] = {}
     eps_ee3 = env.max_branching * (env.rounds ** (-1.0 / (env.depth_value + 1.0)))
     eps_ps = env.max_branching * (env.rounds ** (-1.0 / (env.r0 + 1.0)))
@@ -1118,30 +1166,38 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
         for rep in range(NUM_AVERAGE_RUNS):
             run_seed = base_seed + 1000003 * rep
             print(f"Running {algo_name} on {env.env_name}, run {rep + 1}/{NUM_AVERAGE_RUNS} with seed {run_seed}")
+
+            # Optionally regenerate a new tree/environment per repetition
+            if getattr(args, "regen_tree_each_run", False):
+                prep = _generate_prepared_env_from_template(env, run_seed, rep)
+                use_env = prep
+            else:
+                use_env = env
+
             cost, leaf_used, regret, accum, avg, _ = _run_algo_numba(
                 int(algo_id),
                 int(run_seed),
-                int(env.rounds),
-                int(env.n),
-                env.parent,
-                env.child_start,
-                env.child_count,
-                env.child_list,
-                env.is_leaf,
-                env.is_safe,
-                env.is_share,
-                env.leaf_prob,
-                env.leaf_distribution,
-                env.leaf_count,
-                env.subtree_leaf_start,
-                env.subtree_leaf_count,
-                env.subtree_leaves,
-                env.need_explore,
-                int(env.depth_value),
-                int(max(env.max_branching, 1)),
-                int(env.r0),
-                int(env.best_leaf),
-                float(env.best_leaf_p),
+                int(use_env.rounds),
+                int(use_env.n),
+                use_env.parent,
+                use_env.child_start,
+                use_env.child_count,
+                use_env.child_list,
+                use_env.is_leaf,
+                use_env.is_safe,
+                use_env.is_share,
+                use_env.leaf_prob,
+                use_env.leaf_distribution,
+                use_env.leaf_count,
+                use_env.subtree_leaf_start,
+                use_env.subtree_leaf_count,
+                use_env.subtree_leaves,
+                use_env.need_explore,
+                int(use_env.depth_value),
+                int(max(use_env.max_branching, 1)),
+                int(use_env.r0),
+                int(use_env.best_leaf),
+                float(use_env.best_leaf_p),
                 False,
             )
 
@@ -1149,8 +1205,8 @@ def _simulate_one_env(env: PreparedEnvironment) -> None:
             regret_runs.append(regret)
             accum_runs.append(accum)
             avg_runs.append(avg)
-            best_path_hits += (leaf_used == env.best_leaf).astype(np.float64)
-            share_hits += (env.is_share[leaf_used] == 1).astype(np.float64)
+            best_path_hits += (leaf_used == use_env.best_leaf).astype(np.float64)
+            share_hits += (use_env.is_share[leaf_used] == 1).astype(np.float64)
             avg_costs.append(float(np.mean(cost)))
 
         mean_cost = np.mean(np.stack(cost_runs, axis=0), axis=0)                # mean across runs, shape (rounds,)
@@ -1300,6 +1356,11 @@ def parse_args() -> argparse.Namespace:
         default="online",
         choices=["online", "offline", "disabled"],
         help="WandB mode",
+    )
+    parser.add_argument(
+        "--regen-tree-each-run",
+        action="store_true",
+        help="regenerate a new tree/environment for each averaged repetition (NUM_AVERAGE_RUNS)",
     )
     return parser.parse_args()
 

@@ -115,6 +115,7 @@ def _run_one_trial(args: argparse.Namespace) -> None:
         wandb_name=run_name,
         wandb_mode=args.wandb_mode,
         testcase_path=str(testcase),
+        regen_tree_each_run=getattr(args, "regen_tree_each_run", False),
     )
 
     simulate_single_env(envs[0], run_args, job_type="avg_regret")
@@ -156,6 +157,11 @@ def parse_args() -> argparse.Namespace:
         default="online",
         choices=["online", "offline", "disabled"],
         help="WandB mode",
+    )
+    parser.add_argument(
+        "--regen-tree-each-run",
+        action="store_true",
+        help="regenerate a new tree/environment for each averaged repetition (NUM_AVERAGE_RUNS)",
     )
     return parser.parse_args()
 

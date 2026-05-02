@@ -11,6 +11,13 @@ from pathlib import Path
 import tree_builders
 
 
+def _add_tree_metadata(env: dict, tree_shape: str, params: dict[str, object]) -> dict:
+    env = dict(env)
+    env["tree_shape"] = tree_shape
+    env["tree_params"] = params
+    return env
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate a tree testcase JSON (full binary tree, caterpillar, or mixcaterpillar)."
@@ -149,7 +156,7 @@ def generate_case_full_binary(
         "p": p,
         "distribution": distribution,
     }
-    return [env]
+    return [_add_tree_metadata(env, "full-binary", {"K": k, "S": s, "ratio": ratio})]
 
 
 def generate_case_caterpillar(
@@ -189,7 +196,7 @@ def generate_case_caterpillar(
         "p": p,
         "distribution": distribution,
     }
-    return [env]
+    return [_add_tree_metadata(env, "caterpillar", {"K": k, "R": r})]
 
 
 def _ratio_tag(value: float) -> str:
@@ -231,7 +238,7 @@ def generate_case_mix_caterpillar(
         "p": p,
         "distribution": distribution,
     }
-    return [env]
+    return [_add_tree_metadata(env, "mixcaterpillar", {"K": k, "mix_ratio": mix_ratio})]
 
 
 def generate_case(

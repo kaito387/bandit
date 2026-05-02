@@ -167,7 +167,7 @@ def assign_g_values_full_binary(
         g array (length = node_counts - 1, indexed as g[node-1]).
     """
     node_counts = tree.node_counts
-    num_special_leaves = max(1, int((len(tree.leaves) * ratio) + 0.5))  # ceil(ratio * |leaves|)
+    num_special_leaves = max(0, int((len(tree.leaves) * ratio) + 0.5))  # ceil(ratio * |leaves|)
     special_leaves_set = set(tree.leaves[:num_special_leaves])
 
     g = [0] * (node_counts - 1)
