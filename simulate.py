@@ -506,6 +506,55 @@ def _logsumexp_subtree(
 
 
 @njit(cache=True)
+def _sample_leaf_from_subtree(
+    node: int,
+    eta_ps: float,
+    theta: np.ndarray,
+    subtree_leaf_start: np.ndarray,
+    subtree_leaf_count: np.ndarray,
+    subtree_leaves: np.ndarray,
+) -> Tuple[int, float]:
+    """Sample a leaf from a safe subtree using exp3 on theta values.
+    
+    Returns:
+        (sampled_leaf_node, selection_probability)
+    """
+    start = subtree_leaf_start[node]
+    cnt = subtree_leaf_count[node]
+    
+    # Compute max theta for numerical stability
+    first_leaf = subtree_leaves[start]
+    max_theta = eta_ps * float(theta[int(first_leaf)])
+    for i in range(1, cnt):
+        leaf = subtree_leaves[start + i]
+        val = eta_ps * float(theta[int(leaf)])
+        if val > max_theta:
+            max_theta = val
+    
+    # Compute softmax probabilities over all leaves
+    probs = np.empty(cnt, dtype=np.float64)
+    total = 0.0
+    for i in range(cnt):
+        leaf = subtree_leaves[start + i]
+        exp_val = math.exp(eta_ps * float(theta[int(leaf)]) - max_theta)
+        probs[i] = exp_val
+        total += exp_val
+    
+    if total <= EPS:
+        raise ValueError("underflowed in leaf sampling")
+    else:
+        for i in range(cnt):
+            probs[i] /= total
+    
+    # Sample a leaf index from probabilities
+    leaf_idx = _sample_discrete(probs, cnt)
+    sampled_leaf = int(subtree_leaves[start + leaf_idx])
+    sampled_prob = probs[leaf_idx]
+    
+    return sampled_leaf, sampled_prob
+
+
+@njit(cache=True)
 def _stable_ps_safe_probs(
     node: int,
     start: int,
@@ -771,6 +820,20 @@ def _run_algo_numba(
         while is_leaf[node] == 0:
             path_nodes[depth] = node
             depth += 1
+
+            # Optimization: PS algorithm on safe node - directly sample leaf from subtree
+            if algo_id == 1 and is_safe[node] == 1:
+                sampled_leaf, leaf_prob_val = _sample_leaf_from_subtree(
+                    node,
+                    eta_ps,
+                    theta,
+                    subtree_leaf_start,
+                    subtree_leaf_count,
+                    subtree_leaves,
+                )
+                prob_to_node[sampled_leaf] = leaf_prob_val
+                node = sampled_leaf
+                break
 
             start = child_start[node]
             cnt = child_count[node]
