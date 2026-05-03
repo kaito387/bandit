@@ -242,7 +242,7 @@ def _validate_env_obj(obj: dict, index: int) -> EnvironmentInput:
 
     if tree_shape is not None:
         tree_shape = str(tree_shape).strip()
-        if tree_shape not in {"full-binary", "caterpillar", "mixcaterpillar"}:
+        if tree_shape not in {"full-binary", "caterpillar", "mixcaterpillar", "mix-full-binary"}:
             raise ValueError(f"env[{index}] unknown tree_shape: {tree_shape}")
 
     if not isinstance(tree_params_raw, dict):
@@ -638,7 +638,7 @@ def _compute_child_probabilities(
         best_q = q[child_list[start]]
         for i in range(1, cnt):
             cand = child_list[start + i]
-            if q[cand] < best_q - 1e-15:
+            if q[cand] < best_q:
                 best_q = q[cand]
                 chosen_slot = i
         for i in range(cnt):
@@ -762,7 +762,7 @@ def _run_algo_numba(
     np.random.seed(seed)
 
     theta = np.zeros(n, dtype=np.float64)
-    q = np.ones(n, dtype=np.float64)
+    q = np.zeros(n, dtype=np.float64)
     count_seen = np.zeros(n, dtype=np.int64)
 
     eps_ee3 = max_branching * (rounds ** (-1.0 / (depth_value + 1.0))) if depth_value >= 0 else 0.0
@@ -790,8 +790,6 @@ def _run_algo_numba(
     cum_reg = 0.0
 
     for t in range(rounds):
-        if (t + 1) % max(1, rounds // 5) == 0:
-            print(f"Round {t + 1}/{rounds}...")
         if track_leaf_probs:
             _fill_leaf_distribution(
                 algo_id,
@@ -863,10 +861,10 @@ def _run_algo_numba(
                 temp_probs,
             )
 
-            if algo_id == 4:  # Random
-                chosen_slot = int(np.random.randint(0, cnt))
-            else:
-                chosen_slot = _sample_discrete(temp_probs, cnt)
+            chosen_slot = _sample_discrete(temp_probs, cnt)
+            
+            if temp_probs[chosen_slot] < EPS:
+                raise ValueError("underflowed in child sampling")
             chosen_prob = max(temp_probs[chosen_slot], EPS)
 
             child = child_list[start + chosen_slot]
@@ -1083,6 +1081,7 @@ def _log_summary_payload(summary: Dict[str, Any]) -> None:
     wandb.summary["bestPath"] = int(summary["tree_metrics"]["bestPath"])
     wandb.summary["bestPathP"] = float(summary["tree_metrics"]["bestPathP"])
     wandb.summary["tree_metrics"] = summary["tree_metrics"]
+    wandb.summary["lastRunAlgorithm"] = summary["algorithms"][-1]
 
     # if only one algorithm was run, log algorithms_summary/key = value
     # else, log algorithms_summary/algo_name/key = value for each algo and key
@@ -1109,6 +1108,16 @@ def _generate_prepared_env_from_template(env: PreparedEnvironment, rep_seed: int
 
     if tree_shape == "full-binary":
         payload = generate_full_binary_case.generate_case_full_binary(
+            k=int(tree_params["K"]),
+            s=int(tree_params["S"]),
+            ratio=float(tree_params["ratio"]),
+            algo=env.raw_algo[0],
+            rounds=int(env.rounds),
+            seed=int(rep_seed),
+            env_name=f"{env.env_name}_rep{rep_idx}",
+        )
+    elif tree_shape == "mix-full-binary":
+        payload = generate_full_binary_case.generate_case_mix_full_binary(
             k=int(tree_params["K"]),
             s=int(tree_params["S"]),
             ratio=float(tree_params["ratio"]),
@@ -1169,6 +1178,7 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
 
             # Optionally regenerate a new tree/environment per repetition
             if getattr(args, "regen_tree_each_run", False):
+                print(f"Regenerating environment for {env.env_name}, run {rep + 1}/{NUM_AVERAGE_RUNS} with seed {run_seed}")
                 prep = _generate_prepared_env_from_template(env, run_seed, rep)
                 use_env = prep
             else:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List
 
 
 @dataclass
@@ -147,6 +147,34 @@ class CaterpillarTreeBuilder:
             max_depth=k,
         )
 
+def assign_g_values_mix_full_binary(
+    tree: TreeStructure, ratio: float, rng: random.Random
+) -> List[int]:
+    """Assign g values for mix full binary tree.
+
+    Strategy:
+    - Each non-root node independently samples g=1 with probability `ratio`.
+    - Otherwise g=0.
+
+    Args:
+        tree: TreeStructure from FullBinaryTreeBuilder.
+        ratio: Probability of g=1 for each non-root node, in [0, 1].
+        rng: Random number generator.
+
+    Returns:
+        g array (length = node_counts - 1, indexed as g[node-1]).
+    """
+    if ratio < 0.0 or ratio > 1.0:
+        raise ValueError("ratio must be in [0, 1]")
+
+    node_counts = tree.node_counts
+    g = [0] * (node_counts - 1)
+
+    for node in range(1, node_counts):
+        if rng.random() < ratio:
+            g[node - 1] = 1
+
+    return g
 
 def assign_g_values_full_binary(
     tree: TreeStructure, ratio: float, rng: random.Random
@@ -250,11 +278,12 @@ def assign_g_values_mix_caterpillar(
 def assign_p_values_full_binary(tree: TreeStructure, rng: random.Random) -> List[float]:
     """Assign p values for full binary tree leaves.
 
-    All leaves sample from [0.2, 0.8] uniformly.
+    Assign values deterministically from left to right over the DFS leaf order,
+    linearly spaced from 0.2 to 0.8.
 
     Args:
         tree: TreeStructure with leaves list.
-        rng: Random number generator.
+        rng: Random number generator (unused).
 
     Returns:
         p array (length = node_counts - 1, indexed as p[node-1] for non-root nodes).
@@ -262,9 +291,14 @@ def assign_p_values_full_binary(tree: TreeStructure, rng: random.Random) -> List
     node_counts = tree.node_counts
     p = [0.0] * (node_counts - 1)
 
-    for leaf in tree.leaves:
+    leaf_count = len(tree.leaves)
+    for idx, leaf in enumerate(tree.leaves):
         if leaf >= 1:
-            p[leaf - 1] = round(rng.uniform(0.2, 0.8), 6)
+            if leaf_count > 1:
+                value = 0.2 + (0.6 * idx) / (leaf_count - 1)
+            else:
+                value = 0.2
+            p[leaf - 1] = round(value, 6)
 
     return p
 
@@ -273,13 +307,12 @@ def assign_p_values_caterpillar(tree: TreeStructure, rng: random.Random) -> List
     """Assign p values for caterpillar tree leaves.
 
     Strategy:
-    - Leaves are sampled from depth-dependent intervals.
-    - Deeper leaves sample from higher [p_min, p_max] values.
-    - Linear interpolation: at depth d, sample from [0.2 + (d/max_d)*0.6, ...]
+    - Leaves are assigned deterministically by depth.
+    - Depth 1 maps to 0.2 and depth max_depth maps to 0.8.
 
     Args:
         tree: TreeStructure with leaves and depth_map.
-        rng: Random number generator.
+        rng: Random number generator (unused).
 
     Returns:
         p array (length = node_counts - 1).
@@ -288,23 +321,16 @@ def assign_p_values_caterpillar(tree: TreeStructure, rng: random.Random) -> List
     p = [0.0] * (node_counts - 1)
 
     max_depth = tree.max_depth
+    if max_depth > 1:
+        depth_values = [0.2 + (0.6 * i) / (max_depth - 1) for i in range(max_depth)]
+    else:
+        depth_values = [0.2]
 
     for leaf in tree.leaves:
         if leaf >= 1:
             depth = tree.depth_map[leaf]
-            # Interpolate sampling interval: as depth increases from 0 to max_depth,
-            # min increases from 0.2 to 0.8, max stays at 0.8
-            # Or: min=0.2, max goes from 0.8 to something higher
-            # Better: as depth increases, interval shifts right: [0.2 + k*d, 0.8 + k*d]
-            # Constrain to [0, 1]: safer to keep interval in [0.2, 0.8] but shift by depth ratio
-            if max_depth > 0:
-                depth_ratio = depth / max_depth
-                p_min = 0.2 + depth_ratio * 0.6  # From 0.2 to 0.8 as depth goes 0 to max
-                p_max = 0.8
-            else:
-                p_min, p_max = 0.2, 0.8
-
-            p[leaf - 1] = round(rng.uniform(p_min, min(p_max, 1.0)), 6)
+            depth_idx = min(max(depth - 1, 0), len(depth_values) - 1)
+            p[leaf - 1] = round(depth_values[depth_idx], 6)
 
     return p
 

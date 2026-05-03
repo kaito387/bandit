@@ -26,8 +26,8 @@ A full S-ary tree with depth K (root at depth 0). Properties:
 **Parametrization:**
 - `--ratio`: Fraction of leaves (from left in DFS order) marked as `g=1` (0–1).
 - Leaves with `g=1` and their ancestors are marked `g=1`; others are `g=0` (except root, which is always `g=1`).
-- All leaves sample $p \in [0.2, 0.8]$ uniformly.
-- One random leaf is marked $p=0.05$ and `distribution=TIMEVARIANT`.
+- Leaves are assigned $p$ values deterministically from left to right in DFS order, linearly spaced from 0.2 to 0.8.
+- The leaf with the largest $p$ is marked $p=0.05$ and `distribution=TIMEVARIANT`.
 
 **Example: generate a binary tree (S=2, K=3, ratio=0.5)**
 
@@ -50,8 +50,8 @@ A "backbone" tree where:
 
 **Parametrization:**
 - `--R`: First R layers (depth 0 to R inclusive) have `g=0`; others have `g=1`.
-- Leaves sample $p$ from depth-dependent intervals: deeper leaves sample from higher values in [0.2, 0.8].
-- The deepest leaf (last in the leaves list) is marked $p=0.05$ and `distribution=TIMEVARIANT`.
+- Leaves are assigned $p$ values deterministically by depth, linearly spaced from 0.2 at depth 1 to 0.8 at depth K.
+- The leaf with the largest $p$ is marked $p=0.05$ and `distribution=TIMEVARIANT`.
 
 **Example: generate a caterpillar tree (K=2, R=0)**
 
@@ -69,8 +69,8 @@ This shape keeps the caterpillar topology, but samples `g` per node.
 
 **Parametrization:**
 - `--ratio`: Each non-root node independently has `g=1` with probability `ratio`.
-- Leaves sample `p` from depth-dependent intervals: deeper leaves sample from higher values in [0.2, 0.8].
-- The deepest leaf (last in the leaves list) is marked `p=0.05` and `distribution=TIMEVARIANT`.
+- Leaves are assigned $p$ values deterministically by depth, linearly spaced from 0.2 at depth 1 to 0.8 at depth K.
+- The leaf with the largest $p$ is marked $p=0.05$ and `distribution=TIMEVARIANT`.
 
 **Example: generate a mixcaterpillar tree (K=2, ratio=0.5)**
 

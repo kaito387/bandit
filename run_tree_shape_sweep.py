@@ -50,6 +50,20 @@ def _write_generated_case(
             seed=seed,
             env_name=env_name,
         )
+    elif tree_shape == "mix-full-binary":
+        if s is None or ratio is None:
+            raise ValueError("--S and --ratio required for mix-full-binary")
+        ratio_tag = _ratio_tag(ratio)
+        env_name = f"mixFullBinaryTreeS{s}K{k}R{ratio_tag}"
+        payload = generate_full_binary_case.generate_case_mix_full_binary(
+            k=k,
+            s=s,
+            ratio=ratio,
+            algo=algo,
+            rounds=rounds,
+            seed=seed,
+            env_name=env_name,
+        )
     elif tree_shape == "caterpillar":
         if r is None:
             r = 0
@@ -127,7 +141,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tree-shape",
         type=str,
-        choices=["full-binary", "caterpillar", "mixcaterpillar"],
+        choices=["full-binary", "caterpillar", "mixcaterpillar", "mix-full-binary"],
         default="full-binary",
         help="Tree shape (default: full-binary)",
     )

@@ -18,6 +18,12 @@ def _add_tree_metadata(env: dict, tree_shape: str, params: dict[str, object]) ->
     return env
 
 
+def _select_special_leaf_idx_by_max_p(tree: tree_builders.TreeStructure, p: list[float]) -> int:
+    if not tree.leaves:
+        raise ValueError("No leaves available")
+    return max(range(len(tree.leaves)), key=lambda idx: p[tree.leaves[idx] - 1])
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate a tree testcase JSON (full binary tree, caterpillar, or mixcaterpillar)."
@@ -117,6 +123,41 @@ def validate_args(args: argparse.Namespace) -> None:
         if not (0.0 <= args.mix_ratio <= 1.0):
             raise ValueError("mix-ratio must be in [0, 1]")
 
+def generate_case_mix_full_binary(
+    k: int,
+    s: int,
+    ratio: float,
+    algo: str,
+    rounds: int,
+    seed: int,
+    env_name: str,
+) -> list[dict]:
+    """Generate mix full binary tree case."""
+    rng = random.Random(seed)
+
+    builder = tree_builders.FullBinaryTreeBuilder(s=s, k=k)
+    tree = builder.build()
+
+    g = tree_builders.assign_g_values_mix_full_binary(tree, ratio=ratio, rng=rng)
+    p = tree_builders.assign_p_values_full_binary(tree, rng=rng)
+
+    special_leaf_idx = _select_special_leaf_idx_by_max_p(tree, p)
+    special_leaf = tree.leaves[special_leaf_idx]
+    p[special_leaf - 1] = 0.05
+    distribution = tree_builders.assign_distribution(tree, special_leaf_idx, rng=rng)
+
+    env = {
+        "env_name": env_name,
+        "algo": [algo],
+        "seed": seed,
+        "node_counts": tree.node_counts,
+        "rounds": rounds,
+        "parents": tree.parents,
+        "g": g,
+        "p": p,
+        "distribution": distribution,
+    }
+    return [_add_tree_metadata(env, "mix-full-binary", {"K": k, "S": s, "ratio": ratio})]
 
 def generate_case_full_binary(
     k: int,
@@ -138,10 +179,9 @@ def generate_case_full_binary(
     g = tree_builders.assign_g_values_full_binary(tree, ratio=ratio, rng=rng)
     p = tree_builders.assign_p_values_full_binary(tree, rng=rng)
 
-    # Pick a random special leaf and mark it as TimeVariant with p=0.05
-    rng_for_special = random.Random(seed + 1)
-    special_leaf = tree_builders.select_random_leaf(tree.leaves, rng_for_special)
-    special_leaf_idx = tree.leaves.index(special_leaf)
+    # Mark the leaf with the largest p as TimeVariant with p=0.05.
+    special_leaf_idx = _select_special_leaf_idx_by_max_p(tree, p)
+    special_leaf = tree.leaves[special_leaf_idx]
     p[special_leaf - 1] = 0.05
     distribution = tree_builders.assign_distribution(tree, special_leaf_idx, rng=rng)
 
@@ -178,9 +218,8 @@ def generate_case_caterpillar(
     g = tree_builders.assign_g_values_caterpillar(tree, r=r)
     p = tree_builders.assign_p_values_caterpillar(tree, rng=rng)
 
-    # Pick the last (deepest, rightmost) leaf for special treatment
-    rng_for_special = random.Random(seed + 1)
-    special_leaf_idx = len(tree.leaves) - 1  # Last leaf in the list
+    # Mark the leaf with the largest p as TimeVariant with p=0.05.
+    special_leaf_idx = _select_special_leaf_idx_by_max_p(tree, p)
     special_leaf = tree.leaves[special_leaf_idx]
     p[special_leaf - 1] = 0.05
     distribution = tree_builders.assign_distribution(tree, special_leaf_idx, rng=rng)
@@ -221,9 +260,8 @@ def generate_case_mix_caterpillar(
     g = tree_builders.assign_g_values_mix_caterpillar(tree, ratio=mix_ratio, rng=rng)
     p = tree_builders.assign_p_values_caterpillar(tree, rng=rng)
 
-    rng_for_special = random.Random(seed + 1)
-    special_leaf = tree_builders.select_random_leaf(tree.leaves, rng_for_special)
-    special_leaf_idx = tree.leaves.index(special_leaf)
+    special_leaf_idx = _select_special_leaf_idx_by_max_p(tree, p)
+    special_leaf = tree.leaves[special_leaf_idx]
     p[special_leaf - 1] = 0.05
     distribution = tree_builders.assign_distribution(tree, special_leaf_idx, rng=rng)
 

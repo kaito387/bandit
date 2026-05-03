@@ -5,17 +5,19 @@ metric:
   goal: minimize
 parameters:
   tree-shape:
-    value: "mixcaterpillar"
+    value: "mix-full-binary"
   K:
-    values: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    values: [2, 3, 4, 5, 6, 7]
+  S:
+    value: 2
   rounds:
     value: 5000000
   seed:
     value: 42
   algo:
-    value: "PS"
+    values: ["EE3", "E3Q", "E3", "R", "Q"]
   ratio:
-    values: [0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.92, 0.93, 0.94, 0.95, 0.96, 0.97, 0.98, 0.985, 0.99, 0.995, 1]
+    value: 0
 command:
   - ${env}
   - ${interpreter}
