@@ -306,9 +306,6 @@ def main() -> None:
 
     algo_code = str(args.algo).strip().upper()
 
-    random.seed()
-    args.seed += random.randint(0, 1000)  # avoid same tree structure when sweeping multiple cases with same seed
-
     if args.tree_shape == "full-binary":
         env_name = args.env_name or f"fullBinaryTreeS{args.S}K{args.K}R{args.ratio}"
         payload = generate_case_full_binary(

@@ -6,8 +6,6 @@ All plots/tables/summaries are logged to WandB.
 
 ```bash
 python simulate.py --input testcases/demo.json
-python plot_leaf_prob.py --input testcases/demo.json
-python plot_summary_bars.py --input ref/caterpillarS2K5/summary.json
 ```
 
 Optional: add `--wandb-mode offline` for local/offline logging.

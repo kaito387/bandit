@@ -164,7 +164,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--algo", type=str, required=True, help="single algo code from sweep config (e.g. PS, E3Q, EE3)")
     parser.add_argument("--generated-dir", default="testcases/generated", help="directory for generated testcase JSON")
 
-    parser.add_argument("--leaf-prob", action="store_true", help="also log leaf probability plots")
     parser.add_argument("--wandb-group", default=None, help="optional WandB group override")
     parser.add_argument(
         "--wandb-mode",
@@ -207,6 +206,7 @@ def main() -> None:
         if args.ratio < 0.0 or args.ratio > 1.0:
             raise ValueError("--ratio must be in [0, 1]")
 
+    print(f"wandb_group: {args.wandb_group}")
     _run_one_trial(args)
 
 

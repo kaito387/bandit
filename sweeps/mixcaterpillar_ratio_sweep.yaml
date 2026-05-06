@@ -7,11 +7,9 @@ parameters:
   tree-shape:
     value: "mixcaterpillar"
   K:
-    values: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    values: [2, 3, 4, 5, 6, 7, 8]
   rounds:
-    value: 5000000
-  seed:
-    value: 42
+    value: 100000000
   algo:
     value: "PS"
   ratio:

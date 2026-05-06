@@ -240,11 +240,6 @@ def _validate_env_obj(obj: dict, index: int) -> EnvironmentInput:
     if not isinstance(distribution_raw, dict):
         raise ValueError(f"env[{index}] distribution must be an object")
 
-    if tree_shape is not None:
-        tree_shape = str(tree_shape).strip()
-        if tree_shape not in {"full-binary", "caterpillar", "mixcaterpillar", "mix-full-binary"}:
-            raise ValueError(f"env[{index}] unknown tree_shape: {tree_shape}")
-
     if not isinstance(tree_params_raw, dict):
         raise ValueError(f"env[{index}] tree_params must be an object")
 
@@ -259,7 +254,7 @@ def _validate_env_obj(obj: dict, index: int) -> EnvironmentInput:
             raise ValueError(f"env[{index}] distribution node out of range: {node}")
 
         if not isinstance(value, str):
-            raise ValueError(f"env[{index}] distribution value for node {node} must be string")
+            raise ValueError(f"env[{index}] distribution value for node {node} tmust be string")
 
         norm = value.strip().upper()
         if norm not in DIST_NAME_TO_CODE:
@@ -758,7 +753,12 @@ def _run_algo_numba(
     best_leaf: int,
     best_leaf_p: float,
     track_leaf_probs: bool,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    sample_idxs: np.ndarray,
+    n_samples: int,
+    sampled_avg_out: np.ndarray,
+    sampled_best_out: np.ndarray,
+    sampled_share_out: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
     np.random.seed(seed)
 
     theta = np.zeros(n, dtype=np.float64)
@@ -767,19 +767,12 @@ def _run_algo_numba(
 
     eps_ee3 = max_branching * (rounds ** (-1.0 / (depth_value + 1.0))) if depth_value >= 0 else 0.0
     eps_ps = max_branching * (rounds ** (-1.0 / (r0 + 1.0))) if r0 >= 0 else 0.0
-    # NOTE in paper, ps = di * ..., here we use max_branching instead for simplicity
 
     eta_ps = rounds ** (-float(r0) / (r0 + 1.0)) if r0 > 0 else 1.0
     eta_e3 = math.sqrt(math.log(max(max_branching, 2)) / (rounds * max(max_branching, 1)))
     eta_ee3 = rounds ** (-float(depth_value) / (depth_value + 1.0)) if depth_value > 0 else 1.0
 
-    cost = np.zeros(rounds, dtype=np.float64)
-    leaf_used = np.zeros(rounds, dtype=np.int64)
-    regret = np.zeros(rounds, dtype=np.float64)
-    accum = np.zeros(rounds, dtype=np.float64)
-    avg = np.zeros(rounds, dtype=np.float64)
-    leaf_probs = np.zeros((rounds, n), dtype=np.float64) if track_leaf_probs else np.zeros((1, 1), dtype=np.float64)
-
+    # lightweight working arrays
     path_nodes = np.empty(n, dtype=np.int64)
     prob_to_node = np.ones(n, dtype=np.float64)
     local_prob = np.ones(n, dtype=np.float64)
@@ -788,9 +781,13 @@ def _run_algo_numba(
     prob_stack = np.empty(n, dtype=np.float64)
 
     cum_reg = 0.0
+    cost_sum = 0.0
+    next_sample_idx = 0
 
     for t in range(rounds):
         if track_leaf_probs:
+            # legacy support: fill a dummy buffer (not used)
+            dummy = np.zeros(1, dtype=np.float64)
             _fill_leaf_distribution(
                 algo_id,
                 theta,
@@ -812,7 +809,7 @@ def _run_algo_numba(
                 temp_probs,
                 node_stack,
                 prob_stack,
-                leaf_probs[t],
+                dummy,
             )
 
         node = 0
@@ -824,7 +821,6 @@ def _run_algo_numba(
             path_nodes[depth] = node
             depth += 1
 
-            # Optimization: PS algorithm on safe node - directly sample leaf from subtree
             if algo_id == 1 and is_safe[node] == 1:
                 sampled_leaf, leaf_prob_val = _sample_leaf_from_subtree(
                     node,
@@ -862,7 +858,6 @@ def _run_algo_numba(
             )
 
             chosen_slot = _sample_discrete(temp_probs, cnt)
-            
             if temp_probs[chosen_slot] < EPS:
                 raise ValueError("underflowed in child sampling")
             chosen_prob = max(temp_probs[chosen_slot], EPS)
@@ -876,43 +871,46 @@ def _run_algo_numba(
         p_leaf = leaf_prob[leaf]
         c = _sample_leaf_cost(int(leaf_distribution[leaf]), p_leaf, t, rounds)
 
-        cost[t] = c
-        leaf_used[t] = leaf
         regret_t = c - best_leaf_p
-        regret[t] = regret_t
         cum_reg += regret_t
-        accum[t] = cum_reg
-        avg[t] = cum_reg / float(t + 1)
+        cost_sum += c
 
-        if algo_id == 1: # PS
+        if algo_id == 1:  # PS
             cur = leaf
             while cur != -1:
                 theta[cur] -= c / max(prob_to_node[cur], EPS)
                 cur = parent[cur]
 
-        elif algo_id == 2: # E3
+        elif algo_id == 2:  # E3
             cur = leaf
             while cur != -1:
                 theta[cur] -= c / max(local_prob[cur], EPS)
                 cur = parent[cur]
 
-        elif algo_id == 3 or algo_id == 6: # EE3 or E3Q
+        elif algo_id == 3 or algo_id == 6:  # EE3 or E3Q
             cur = leaf
             while cur != -1:
                 theta[cur] -= c / max(prob_to_node[cur], EPS)
                 cur = parent[cur]
 
-        elif algo_id == 5: # Q-learning
+        elif algo_id == 5:  # Q-learning
             cur = leaf
             while cur != -1:
                 count_seen[cur] += 1
                 q[cur] = q[cur] + (c - q[cur]) / count_seen[cur]
                 cur = parent[cur]
 
-    return cost, leaf_used, regret, accum, avg, leaf_probs
+        # If current t matches next sample index, record sampled outputs
+        if next_sample_idx < n_samples and t == sample_idxs[next_sample_idx]:
+            sampled_avg_out[next_sample_idx] = cum_reg / float(t + 1)
+            sampled_best_out[next_sample_idx] = 1 if leaf == best_leaf else 0
+            sampled_share_out[next_sample_idx] = 1 if is_share[leaf] == 1 else 0
+            next_sample_idx += 1
+
+    return sampled_avg_out, sampled_best_out, sampled_share_out, cum_reg, cost_sum
 
 
-def _require_wandb() -> Any:
+def _require_wandb():
     try:
         import wandb
     except ImportError as exc:
@@ -976,65 +974,18 @@ def _log_leaf_probabilities(
     env_name: str,
     algo_name: str,
 ) -> None:
-    wandb = _require_wandb()
-    plt.figure(figsize=(11, 6))
-    ts = np.arange(1, leaf_probs.shape[0] + 1, dtype=np.int64)
-    for leaf in leaves:
-        plt.plot(ts, leaf_probs[:, int(leaf)], label=f"leaf {int(leaf)}", linewidth=1.4, alpha=0.9)
-
-    plt.title(f"Leaf selection probability over time ({env_name}, {algo_name})")
-    plt.xlabel("t")
-    plt.ylabel("probability")
-    plt.ylim(0.0, 1.0)
-    plt.legend(loc="upper right", fontsize=8, ncol=2)
-    plt.tight_layout()
-    wandb.log({f"charts/leaf_prob_{algo_name}": wandb.Image(plt.gcf())})
-    plt.close()
+    # Leaf-prob plotting removed to reduce memory usage.
+    return
 
 
 
 
 def _log_summary_bars(env_name: str, summary_algorithms: Dict[str, Dict[str, float]]) -> None:
-    wandb = _require_wandb()
-    metrics = [
-        ("avgCost", "avgCost", "avgCost"),
-        ("bestPathRate", "bestPathRate", "bestPathRate"),
-        ("shareRate", "shareRate", "shareRate"),
-        ("finalAvgRegret", "finalAvgRegret", "finalAvgRegret"),
-    ]
-
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    axes_flat = axes.ravel()
-    colors = ["#4C78A8", "#F58518", "#54A24B", "#E45756"]
-    algorithms = list(summary_algorithms.keys())
-
-    for idx, (metric, title, ylabel) in enumerate(metrics):
-        values = np.asarray([float(summary_algorithms[algo][metric]) for algo in algorithms], dtype=np.float64)
-        ax = axes_flat[idx]
-        x = np.arange(len(algorithms))
-        bars = ax.bar(x, values, color=colors[idx % len(colors)], width=0.68)
-
-        ax.set_title(title)
-        ax.set_ylabel(ylabel)
-        ax.set_xticks(x)
-        ax.set_xticklabels(algorithms, rotation=25, ha="right")
-        ax.grid(axis="y", linestyle="--", alpha=0.3)
-
-        y_min, y_max = ax.get_ylim()
-        span = max(y_max - y_min, 1e-12)
-        offset = span * 0.02
-        for bar, value in zip(bars, values):
-            x_txt = bar.get_x() + bar.get_width() / 2.0
-            y_txt = bar.get_height()
-            ax.text(x_txt, y_txt + offset, f"{value:.4g}", ha="center", va="bottom", fontsize=9)
-
-    fig.suptitle(f"Algorithm Summary Comparison ({env_name})", fontsize=15, y=0.98)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    wandb.log({"charts/summary_bars": wandb.Image(fig)})
-    plt.close(fig)
+    # Summary bar plotting removed to reduce memory footprint and simplify output.
+    return
 
 
-def _init_wandb_run(args: argparse.Namespace, env: PreparedEnvironment, job_type: str) -> Any:
+def _init_wandb_run(args: argparse.Namespace, env: PreparedEnvironment, job_type: str):
     wandb = _require_wandb()
     testcase_path = getattr(args, "testcase_path", None)
     sweep_group = getattr(args, "sweep_group", None)
@@ -1065,8 +1016,6 @@ def simulate_single_env(env: PreparedEnvironment, args: argparse.Namespace, job_
     run = _init_wandb_run(args, env, job_type=job_type)
     try:
         _simulate_one_env(env, args)
-        if getattr(args, "leaf_prob", False):
-            run_env_leaf_prob(env)
     finally:
         run.finish()
 
@@ -1164,13 +1113,13 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
     for idx, algo_id in enumerate(env.algo_ids):
         algo_name = ALGO_ID_TO_NAME[int(algo_id)]
         base_seed = env.seed + 10007 * (idx + 1)
-        cost_runs: List[np.ndarray] = []
-        regret_runs: List[np.ndarray] = []
-        accum_runs: List[np.ndarray] = []
-        avg_runs: List[np.ndarray] = []
-        best_path_hits = np.zeros(env.rounds, dtype=np.float64)
-        share_hits = np.zeros(env.rounds, dtype=np.float64)
-        avg_costs: List[float] = []
+
+        # Aggregators for sampled series and scalars
+        sum_sampled_avg = None
+        sum_sampled_best = None
+        sum_sampled_share = None
+        sum_cum_reg = 0.0
+        sum_avg_cost = 0.0
 
         for rep in range(NUM_AVERAGE_RUNS):
             run_seed = base_seed + 1000003 * rep
@@ -1184,7 +1133,16 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
             else:
                 use_env = env
 
-            cost, leaf_used, regret, accum, avg, _ = _run_algo_numba(
+            # Determine sampling indices (uniform) for this run
+            n_samples = min(200, int(use_env.rounds))
+            sample_idxs = np.unique(np.linspace(1, int(use_env.rounds), n_samples, dtype=np.int64) - 1)
+            n_samples = sample_idxs.shape[0]
+
+            sampled_avg = np.zeros(n_samples, dtype=np.float64)
+            sampled_best = np.zeros(n_samples, dtype=np.int64)
+            sampled_share = np.zeros(n_samples, dtype=np.int64)
+
+            sampled_avg_out, sampled_best_out, sampled_share_out, cum_reg_run, cost_sum_run = _run_algo_numba(
                 int(algo_id),
                 int(run_seed),
                 int(use_env.rounds),
@@ -1209,37 +1167,51 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
                 int(use_env.best_leaf),
                 float(use_env.best_leaf_p),
                 False,
+                sample_idxs,
+                n_samples,
+                sampled_avg,
+                sampled_best,
+                sampled_share,
             )
 
-            cost_runs.append(cost)
-            regret_runs.append(regret)
-            accum_runs.append(accum)
-            avg_runs.append(avg)
-            best_path_hits += (leaf_used == use_env.best_leaf).astype(np.float64)
-            share_hits += (use_env.is_share[leaf_used] == 1).astype(np.float64)
-            avg_costs.append(float(np.mean(cost)))
+            # Initialize sums on first rep
+            if sum_sampled_avg is None:
+                sum_sampled_avg = np.zeros(n_samples, dtype=np.float64)
+                sum_sampled_best = np.zeros(n_samples, dtype=np.float64)
+                sum_sampled_share = np.zeros(n_samples, dtype=np.float64)
 
-        mean_cost = np.mean(np.stack(cost_runs, axis=0), axis=0)                # mean across runs, shape (rounds,)
-        mean_regret = np.mean(np.stack(regret_runs, axis=0), axis=0)
-        mean_accum = np.mean(np.stack(accum_runs, axis=0), axis=0)
-        mean_avg = np.mean(np.stack(avg_runs, axis=0), axis=0)
-        mean_best_path_rate = best_path_hits / float(NUM_AVERAGE_RUNS)
-        mean_share_rate = share_hits / float(NUM_AVERAGE_RUNS)
+            sum_sampled_avg += sampled_avg_out
+            # sampled_best_out and sampled_share_out are int arrays (0/1)
+            for i in range(n_samples):
+                sum_sampled_best[i] += sampled_best_out[i]
+                sum_sampled_share[i] += sampled_share_out[i]
 
-        avg_cost = float(np.mean(avg_costs))                                    # average cost across all runs (single scalar)
-        best_path_rate = float(np.mean(mean_best_path_rate))
-        share_rate = float(np.mean(mean_share_rate))
+            sum_cum_reg += cum_reg_run
+            sum_avg_cost += (cost_sum_run / float(use_env.rounds))
+
+        # Compute means across runs
+        mean_avg = (sum_sampled_avg / float(NUM_AVERAGE_RUNS)) if sum_sampled_avg is not None else np.zeros(0, dtype=np.float64)
+        mean_best_path_rate = (sum_sampled_best / float(NUM_AVERAGE_RUNS)) if sum_sampled_best is not None else np.zeros(0, dtype=np.float64)
+        mean_share_rate = (sum_sampled_share / float(NUM_AVERAGE_RUNS)) if sum_sampled_share is not None else np.zeros(0, dtype=np.float64)
+
+        avg_cost = float(sum_avg_cost / float(NUM_AVERAGE_RUNS))
+        mean_cum_reg = float(sum_cum_reg / float(NUM_AVERAGE_RUNS))
+        final_avg_regret = float(mean_cum_reg / float(env.rounds))
+        best_path_rate = float(np.mean(mean_best_path_rate)) if mean_best_path_rate.shape[0] > 0 else 0.0
+        share_rate = float(np.mean(mean_share_rate)) if mean_share_rate.shape[0] > 0 else 0.0
 
         summary_algorithms[algo_name] = {
             "avgCost": avg_cost,
             "bestPathRate": float(best_path_rate),
             "shareRate": float(share_rate),
-            "finalAccumRegret": float(mean_accum[-1]),
-            "finalAvgRegret": float(mean_avg[-1]),
+            "finalAccumRegret": float(mean_cum_reg),
+            "finalAvgRegret": float(final_avg_regret),
             "runs": int(NUM_AVERAGE_RUNS),
         }
 
-        rows_generator_list.append((env.env_name, algo_name, mean_cost, mean_regret, mean_accum, mean_avg, mean_best_path_rate, mean_share_rate))
+        # rows_generator_list expects placeholders for some fields; only mean_avg is used by plotting
+        placeholder = np.zeros(mean_avg.shape, dtype=np.float64)
+        rows_generator_list.append((env.env_name, algo_name, placeholder, placeholder, placeholder, mean_avg, mean_best_path_rate, mean_share_rate))
         final_rows.append(
             (
                 algo_name,
@@ -1247,8 +1219,8 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
                 float(avg_cost),
                 float(best_path_rate),
                 float(share_rate),
-                float(mean_avg[-1]),
-                float(mean_accum[-1]),
+                float(final_avg_regret),
+                float(mean_cum_reg),
             )
         )
 
@@ -1288,50 +1260,12 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
     }
 
     _log_summary_payload(summary)
-    _log_summary_bars(env.env_name, summary_algorithms)
-    print(f"[{env.env_name}] logged avg-regret chart, dynamic table, summary, and summary-bars to WandB")
+    print(f"[{env.env_name}] logged avg-regret chart, dynamic table, and summary to WandB")
 
 
 def run_env_leaf_prob(env: PreparedEnvironment) -> None:
-
-    rows_generator_list = []
-
-    for idx, algo_id in enumerate(env.algo_ids):
-        algo_name = ALGO_ID_TO_NAME[int(algo_id)]
-        base_seed = env.seed + 10007 * (idx + 1)
-        cost, leaf_used, regret, accum, avg, leaf_probs = _run_algo_numba(
-            int(algo_id),
-            int(base_seed),
-            int(env.rounds),
-            int(env.n),
-            env.parent,
-            env.child_start,
-            env.child_count,
-            env.child_list,
-            env.is_leaf,
-            env.is_safe,
-            env.is_share,
-            env.leaf_prob,
-            env.leaf_distribution,
-            env.leaf_count,
-            env.subtree_leaf_start,
-            env.subtree_leaf_count,
-            env.subtree_leaves,
-            env.need_explore,
-            int(env.depth_value),
-            int(max(env.max_branching, 1)),
-            int(env.r0),
-            int(env.best_leaf),
-            float(env.best_leaf_p),
-            True,
-        )
-
-        best_path_hits = (leaf_used == env.best_leaf).astype(np.float64)
-        share_hits = (env.is_share[leaf_used] == 1).astype(np.float64)
-
-        rows_generator_list.append((env.env_name, algo_name, cost, regret, accum, avg, best_path_hits, share_hits, 1))
-
-        _log_leaf_probabilities(leaf_probs, env.leaves, env.env_name, algo_name)
+    # Leaf-prob runs and plotting have been removed to reduce memory usage.
+    return
 
 
 def _load_environments(input_file: Path) -> List[PreparedEnvironment]:
@@ -1353,7 +1287,6 @@ def load_environments(input_file: Path) -> List[PreparedEnvironment]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Multistage bandit simulator (JSON + Numba)")
-    parser.add_argument("--leaf-prob", action="store_true", help="whether to track and log leaf selection probabilities (can increase runtime and memory)")
     parser.add_argument("--csv-output", action="store_true", help="whether to write dynamic metrics to CSV file (in addition to WandB)")
     parser.add_argument("--input", required=True, help="path to JSON file (array of environments)")
     parser.add_argument("--output-dir", default="results_json", help="unused; kept for backward compatibility")
