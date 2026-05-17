@@ -7,7 +7,7 @@ parameters:
   tree-shape:
     value: "mix-full-binary"
   K:
-    values: [2, 3, 4, 5, 6, 7]
+    values: [3]
   S:
     value: 2
   rounds:
@@ -15,7 +15,7 @@ parameters:
   seed:
     value: 42
   algo:
-    values: ["EE3", "E3Q", "E3", "R", "Q"]
+    values: ["EE3", "R", "Q"]
   ratio:
     value: 0
 command:

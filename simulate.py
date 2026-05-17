@@ -4,7 +4,7 @@ Input: JSON array of environments.
 Output per environment:
 1) CSV time-series for all selected algorithms.
 2) JSON summary with structural metrics and final stats.
-3) PNG plot for avgRegret[t] vs t.
+3) WandB table with sampled avgRegret[t] data for downstream plotting.
 """
 
 from __future__ import annotations
@@ -17,15 +17,10 @@ from pathlib import Path
 import random
 from typing import Any, Dict, List, Tuple
 
-import matplotlib
 import numpy as np
 from numba import njit
 import generate_full_binary_case
 import tree_builders
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
 
 EPS = 1e-12
 NUM_AVERAGE_RUNS = 50
@@ -38,6 +33,13 @@ DYNAMIC_TABLE_COLUMNS = [
     "shareRate",
     "finalAvgRegret",
     "finalAccumRegret",
+]
+
+AVG_REGRET_SERIES_COLUMNS = [
+    "env_name",
+    "algo_name",
+    "t",
+    "avgRegret",
 ]
 
 ALGO_CODE_TO_ID = {
@@ -920,34 +922,24 @@ def _require_wandb():
     return wandb
 
 
-def _log_avg_regret_plot_streaming(rows_generator_list: List[Tuple], env_name: str) -> None:
-    """Memory-efficient version using generators for large datasets."""
+def _log_avg_regret_series_streaming(rows_generator_list: List[Tuple], env_name: str) -> None:
+    """Log sampled avg-regret series to WandB for downstream plotting."""
     wandb = _require_wandb()
-    algos = sorted({row[1] for row in rows_generator_list})
-    plt.figure(figsize=(10, 6))
-    
-    for algo in algos:
-        for env_name_g, algo_name, mean_cost, mean_regret, mean_accum, mean_avg, mean_best_path_rate, mean_share_rate in rows_generator_list:
-            if algo_name != algo:
-                continue
-            
-            rounds = len(mean_avg)
-            max_t = rounds
-            skip_until = int(max_t * 0.01)
-            
-            ts = np.arange(skip_until + 1, rounds + 1, dtype=np.int64)
-            ys = mean_avg[skip_until:]
-            
-            if len(ts) > 0 and len(ys) > 0:
-                plt.plot(ts, ys, label=algo, linewidth=1.5)
-    
-    plt.title(f"avgRegret[t] vs t ({env_name})")
-    plt.xlabel("t")
-    plt.ylabel("avgRegret[t]")
-    plt.legend(loc="upper right")
-    plt.tight_layout()
-    wandb.log({"charts/avg_regret": wandb.Image(plt.gcf())})
-    plt.close()
+    table = wandb.Table(columns=AVG_REGRET_SERIES_COLUMNS)
+
+    for env_name_g, algo_name, sample_ts, mean_avg, *_unused in rows_generator_list:
+        sample_ts_arr = np.asarray(sample_ts)
+        mean_avg_arr = np.asarray(mean_avg)
+        limit = min(sample_ts_arr.shape[0], mean_avg_arr.shape[0])
+        for idx in range(limit):
+            table.add_data(
+                str(env_name_g),
+                str(algo_name),
+                int(sample_ts_arr[idx]),
+                float(mean_avg_arr[idx]),
+            )
+
+    wandb.log({f"tables/avg_regret_series/{env_name}": table})
 
 
 def _log_dynamic_table_streaming(rows_generator_list: List[Tuple]) -> None:
@@ -1209,9 +1201,8 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
             "runs": int(NUM_AVERAGE_RUNS),
         }
 
-        # rows_generator_list expects placeholders for some fields; only mean_avg is used by plotting
-        placeholder = np.zeros(mean_avg.shape, dtype=np.float64)
-        rows_generator_list.append((env.env_name, algo_name, placeholder, placeholder, placeholder, mean_avg, mean_best_path_rate, mean_share_rate))
+        sample_ts = sample_idxs + 1
+        rows_generator_list.append((env.env_name, algo_name, sample_ts, mean_avg, mean_best_path_rate, mean_share_rate))
         final_rows.append(
             (
                 algo_name,
@@ -1225,7 +1216,7 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
         )
 
     _log_dynamic_table_streaming(final_rows)
-    _log_avg_regret_plot_streaming(rows_generator_list, env.env_name)
+    _log_avg_regret_series_streaming(rows_generator_list, env.env_name)
 
     summary = {
         "env_name": env.env_name,
@@ -1260,7 +1251,7 @@ def _simulate_one_env(env: PreparedEnvironment, args: argparse.Namespace) -> Non
     }
 
     _log_summary_payload(summary)
-    print(f"[{env.env_name}] logged avg-regret chart, dynamic table, and summary to WandB")
+    print(f"[{env.env_name}] logged avg-regret series, dynamic table, and summary to WandB")
 
 
 def run_env_leaf_prob(env: PreparedEnvironment) -> None:

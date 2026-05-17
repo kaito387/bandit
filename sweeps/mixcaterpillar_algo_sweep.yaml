@@ -7,11 +7,11 @@ parameters:
   tree-shape:
     value: "mixcaterpillar"
   K:
-    values: [2, 3, 4, 5, 6, 7, 8]
+    values: [3]
   rounds:
     value: 100000000
   algo:
-    values: ["E3", "EE3", "E3Q"]
+    values: ["EE3", "Q", "R"]
   ratio:
     value: 0
 command:

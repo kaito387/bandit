@@ -3,14 +3,13 @@ import numpy as np
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
 
-fig = plt.figure(figsize=(28, 8))
-gs = gridspec.GridSpec(1, 2, width_ratios=[1, 1])
-gs.update(left=0.07, right=0.97, top=0.8, bottom=0.18, wspace=0.32)
+fig = plt.figure(figsize=(14, 8))
+gs = gridspec.GridSpec(1, 1, width_ratios=[1])
+gs.update(left=0.13, right=0.97, top=0.8, bottom=0.18, wspace=0.32)
 
 caterpillar = fig.add_subplot(gs[0])
-fullTree = fig.add_subplot(gs[1])
+
 caterpillar.set_title('Caterpillar Tree', fontsize=22)
-fullTree.set_title('Full Binary Tree', fontsize=22)
 
 # data
 CatK2 = [0.003020643, 0.005927195, 0.010998763, 0.021994197, 0.028135508, 0.038308791, 0.033647871, 0.022799639, 0.016026707, 0.01368844, 0.0007617, 0.0007617, -0.004629919, -0.006319094, -0.014784434, -0.023803804, -0.027593834, -0.027593834, -0.028431304, -0.032903607, -0.03458542, ]
@@ -34,33 +33,10 @@ caterpillar.plot(Cat_x_pos, CatK7, marker='D', markersize=12, linestyle='--', li
 caterpillar.set_ylabel('Final Average Regret', fontsize=20)
 caterpillar.set_xlabel('Share-Admissible Node Ratio', fontsize=20)
 caterpillar.set_xticks([0, 0.2, 0.4, 0.6, 0.8, 1])
+caterpillar.tick_params(axis='x', labelsize=20)
 caterpillar.tick_params(axis='y', labelsize=20)
 caterpillar.set_yticks([-0.05, 0, 0.05, 0.1, 0.15, 0.2])
 caterpillar.grid(True, linestyle='--', alpha=0.8)
-
-Full_x_pos = [0.2, 0.4, 0.6, 0.7, 0.8, 0.85, 0.9, 0.925, 0.95, 0.9625, 0.975, 0.98, 0.985, 0.99, 0.995, 1, ]
-
-# data
-FullK2 = [0.01780948, 0.0357443, 0.061271016, 0.079969928, 0.058876176, 0.038464912, 0.03439048, 0.02177454, 0.010350132, -0.005018652, -0.013557608, -0.018274264, -0.018274264, -0.022209676, -0.029942588, -0.037828252, ]
-FullK3 = [0.066637048, 0.074950784, 0.103998468, 0.117114036, 0.116496936, 0.114133572, 0.10178524, 0.075712172, 0.044245316, 0.025219076, 0.008265636, -0.005191204, -0.003008892, -0.00704018, -0.015983512, -0.032446688, ]
-FullK4 = [0.164146728, 0.17346758, 0.193856236, 0.203255632, 0.221243064, 0.22509588, 0.225596608, 0.209878168, 0.172165164, 0.15015694, 0.100806808, 0.07807984, 0.064132476, 0.046295708, 0.015361824, -0.031799352, ]
-FullK5 = [0.273466256, 0.277735388, 0.290329172, 0.294823, 0.30003544, 0.307068144, 0.305598132, 0.307592356, 0.297170764, 0.280854576, 0.226153456, 0.194288144, 0.165419228, 0.112435432, 0.055320844, -0.030688088, ]
-FullK6 = [0.33742428, 0.341704336, 0.345804572, 0.348351028, 0.350201908, 0.353066616, 0.354164284, 0.355934888, 0.356346836, 0.355038252, 0.335765692, 0.316973168, 0.279091692, 0.233757864, 0.167551808, -0.028122336, ]
-FullK7 = [0.374000612, 0.37425692, 0.375455844, 0.376759336, 0.37846838, 0.378991136, 0.380085044, 0.380615776, 0.381102992, 0.381186652, 0.37950248, 0.363764488, 0.359054772, 0.330053728, 0.265007784, -0.01877198, ]
-
-fullTree.plot(Full_x_pos, FullK2, marker='o', markersize=12, linestyle='-', linewidth=2.5, label='K=2', color='#69C0FF')
-fullTree.plot(Full_x_pos, FullK3, marker='s', markersize=12, linestyle='--', linewidth=2.5, label='K=3', color='#95DE64')
-fullTree.plot(Full_x_pos, FullK4, marker='^', markersize=12, linestyle='-.', linewidth=2.5, label='K=4', color='#FFEB6B')
-fullTree.plot(Full_x_pos, FullK5, marker='v', markersize=12, linestyle=':', linewidth=2.5, label='K=5', color='#FFBC5C')
-fullTree.plot(Full_x_pos, FullK6, marker='X', markersize=12, linestyle='-', linewidth=2.5, label='K=6', color="#B53EF5")
-fullTree.plot(Full_x_pos, FullK7, marker='D', markersize=12, linestyle='--', linewidth=2.5, label='K=7', color='#FF6B6B')
-
-fullTree.set_ylabel('Final Average Regret', fontsize=20)
-fullTree.set_xlabel('Share-Admissible Node Ratio', fontsize=20)
-fullTree.set_xticks([0.2, 0.4, 0.6, 0.8, 1])
-fullTree.tick_params(axis='y', labelsize=20)
-fullTree.set_yticks([-0.05, 0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4])
-fullTree.grid(True, linestyle='--', alpha=0.8)
 
 handles, labels = caterpillar.get_legend_handles_labels()
 
@@ -74,5 +50,5 @@ fig.legend(
     frameon=False
 )
 
-plt.savefig('sim_ps_ratio_depth.pdf', dpi=300, bbox_inches='tight')
+plt.savefig('sim_ps_ratio_depth_caterpillar_only.pdf', dpi=300, bbox_inches='tight')
 plt.show()
